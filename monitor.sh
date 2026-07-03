@@ -14,19 +14,43 @@ CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-# In-place rendering helpers (flicker-free updates)
-EL='\033[K'          # erase from cursor to end of line
-HOME='\033[H'        # move cursor to top-left
-CLR_BELOW='\033[J'   # erase from cursor to end of screen
+# ---- Terminal control -------------------------------------------------------
+NOWRAP='\033[?7l'    # disable line wrap: long lines are clipped, never wrapped
+WRAP='\033[?7h'      # re-enable line wrap
+CLR_ALL='\033[2J'    # clear whole screen
+HOME='\033[H'        # cursor to top-left
 
 hide_cursor() { tput civis 2>/dev/null; }
 show_cursor() { tput cnorm 2>/dev/null; }
 
-# Default values
+# Current terminal height in rows (fallback 24 if unreadable)
+term_rows() {
+    local r; r=$(tput lines 2>/dev/null)
+    if [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -gt 0 ]; then echo "$r"; else echo 24; fi
+}
+
+# Prepare the screen for live, in-place rendering
+screen_init() {
+    hide_cursor
+    printf "${NOWRAP}${CLR_ALL}${HOME}"
+}
+
+# Restore the terminal to normal on exit
+screen_done() {
+    printf "${WRAP}"
+    show_cursor
+}
+
+# Update EXACTLY ONE row in place: jump to row $1, print $2, clear to line end.
+# This is what makes values update live without repainting the whole screen.
+put() { printf "\033[${1};1H%b\033[K" "$2"; }
+
+# ---- Default values ---------------------------------------------------------
 TARGET="192.168.1.14"
 INTERFACE="wlan0"
 MONITOR_MODE="full"
 REFRESH="1"          # seconds between updates (lower = more real-time)
+NEED_REDRAW=0        # set by SIGWINCH so a resize repaints the static layout
 
 # Convert a bytes/sec figure into a human-readable rate
 human_rate() {
@@ -45,7 +69,16 @@ read_bytes() {
     TX_NOW=$(cat "/sys/class/net/$iface/statistics/tx_bytes" 2>/dev/null || echo 0)
 }
 
-# Show banner
+# Compute live RX/TX rates (B/s) from byte deltas over the ACTUAL elapsed time.
+# Sets RX_RATE / TX_RATE and rolls the previous sample forward.
+calc_rates() {
+    read_bytes "$INTERFACE"; TS_NOW=$(date +%s.%N)
+    RX_RATE=$(awk "BEGIN{dt=$TS_NOW-$TS_PREV; if(dt<=0)dt=$REFRESH; r=($RX_NOW-$RX_PREV)/dt; if(r<0)r=0; printf \"%d\", r}")
+    TX_RATE=$(awk "BEGIN{dt=$TS_NOW-$TS_PREV; if(dt<=0)dt=$REFRESH; r=($TX_NOW-$TX_PREV)/dt; if(r<0)r=0; printf \"%d\", r}")
+    RX_PREV=$RX_NOW; TX_PREV=$TX_NOW; TS_PREV=$TS_NOW
+}
+
+# Show banner (one-off, used by help/standalone)
 show_banner() {
     clear
     echo -e "${CYAN}"
@@ -65,23 +98,24 @@ show_banner() {
     echo -e "${NC}"
 }
 
-# Banner for in-place rendering: no clear, each line erases its own leftovers
-banner_frame() {
-    echo -e "${CYAN}${EL}"
-    echo -e "╔══════════════════════════════════════════════════════════════════╗${EL}"
-    echo -e "║                                                                  ║${EL}"
-    echo -e "║   ███╗   ███╗ ██████╗ ███╗   ██╗██╗████████╗ ██████╗ ██████╗    ║${EL}"
-    echo -e "║   ████╗ ████║██╔═══██╗████╗  ██║██║╚══██╔══╝██╔═══██╗██╔══██╗   ║${EL}"
-    echo -e "║   ██╔████╔██║██║   ██║██╔██╗ ██║██║   ██║   ██║   ██║██████╔╝   ║${EL}"
-    echo -e "║   ██║╚██╔╝██║██║   ██║██║╚██╗██║██║   ██║   ██║   ██║██╔══██╗   ║${EL}"
-    echo -e "║   ██║ ╚═╝ ██║╚██████╔╝██║ ╚████║██║   ██║   ╚██████╔╝██║  ██║   ║${EL}"
-    echo -e "║   ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ║${EL}"
-    echo -e "║                                                                  ║${EL}"
-    echo -e "║              hexxFlood - Monitoring Script v1.0                  ║${EL}"
-    echo -e "╠══════════════════════════════════════════════════════════════════╣${EL}"
-    echo -e "║                       Author: CyWarX                             ║${EL}"
-    echo -e "╚══════════════════════════════════════════════════════════════════╝${EL}"
-    echo -e "${NC}${EL}"
+# Paint the banner starting at the current cursor position (15 rows tall)
+draw_banner_at_top() {
+    printf "${HOME}"
+    echo -e "${CYAN}\033[K"
+    echo -e "╔══════════════════════════════════════════════════════════════════╗\033[K"
+    echo -e "║                                                                  ║\033[K"
+    echo -e "║   ███╗   ███╗ ██████╗ ███╗   ██╗██╗████████╗ ██████╗ ██████╗    ║\033[K"
+    echo -e "║   ████╗ ████║██╔═══██╗████╗  ██║██║╚══██╔══╝██╔═══██╗██╔══██╗   ║\033[K"
+    echo -e "║   ██╔████╔██║██║   ██║██╔██╗ ██║██║   ██║   ██║   ██║██████╔╝   ║\033[K"
+    echo -e "║   ██║╚██╔╝██║██║   ██║██║╚██╗██║██║   ██║   ██║   ██║██╔══██╗   ║\033[K"
+    echo -e "║   ██║ ╚═╝ ██║╚██████╔╝██║ ╚████║██║   ██║   ╚██████╔╝██║  ██║   ║\033[K"
+    echo -e "║   ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ║\033[K"
+    echo -e "║                                                                  ║\033[K"
+    echo -e "║              hexxFlood - Monitoring Script v1.0                  ║\033[K"
+    echo -e "╠══════════════════════════════════════════════════════════════════╣\033[K"
+    echo -e "║                       Author: CyWarX                             ║\033[K"
+    echo -e "╚══════════════════════════════════════════════════════════════════╝\033[K"
+    echo -e "${NC}\033[K"
 }
 
 # Show help
@@ -119,26 +153,11 @@ show_help() {
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
-            -t|--target)
-                TARGET="$2"
-                shift 2
-                ;;
-            -i|--interface)
-                INTERFACE="$2"
-                shift 2
-                ;;
-            -m|--mode)
-                MONITOR_MODE="$2"
-                shift 2
-                ;;
-            -r|--refresh)
-                REFRESH="$2"
-                shift 2
-                ;;
-            -h|--help)
-                show_help
-                exit 0
-                ;;
+            -t|--target)    TARGET="$2";       shift 2 ;;
+            -i|--interface) INTERFACE="$2";    shift 2 ;;
+            -m|--mode)      MONITOR_MODE="$2"; shift 2 ;;
+            -r|--refresh)   REFRESH="$2";      shift 2 ;;
+            -h|--help)      show_help; exit 0 ;;
             *)
                 echo -e "${RED}Unknown option: $1${NC}"
                 show_help
@@ -148,235 +167,250 @@ parse_args() {
     done
 }
 
-# Monitor Ping
+SEP="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# ============================================================================
+#  PING MODE
+# ============================================================================
+draw_static_ping() {
+    printf "${CLR_ALL}"
+    CUR=1
+    put $((CUR++)) "${GREEN}📊 Live ping tracking: ${WHITE}$TARGET${NC}"
+    put $((CUR++)) "${YELLOW}Press Ctrl+C to stop   (updates every ${REFRESH}s)${NC}"
+    put $((CUR++)) ""
+    put $((CUR++)) "${CYAN}${SEP}${NC}"
+    ROW_STATUS=$((CUR++))
+    ROW_REPLY=$((CUR++))
+    put $((CUR++)) "${CYAN}${SEP}${NC}"
+    ROW_TIME=$((CUR++))
+}
+
 monitor_ping() {
-    hide_cursor
-    printf "${CLR_BELOW}"   # clear once; loop redraws in place from here on
+    screen_init
+    draw_static_ping
+    trap 'NEED_REDRAW=1' SIGWINCH
 
     while true; do
-        printf "${HOME}"    # cursor to top-left, no screen blank = no flicker
+        [ "$NEED_REDRAW" = 1 ] && { NEED_REDRAW=0; screen_init; draw_static_ping; }
 
-        echo -e "${GREEN}📊 Monitoring target: $TARGET${NC}${EL}"
-        echo -e "${YELLOW}Press Ctrl+C to stop${NC}${EL}"
-        echo -e "${EL}"
-        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}${EL}"
-        echo -e "${WHITE}📍 TARGET: $TARGET${NC}${EL}"
-        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}${EL}"
-
-        # Single fast ping with a 1s timeout so a dead target never stalls the loop
         if PING_LINE=$(ping -c 1 -W 1 "$TARGET" 2>/dev/null | grep -E "bytes from"); then
             LAT=$(echo "$PING_LINE" | grep -o "time=[0-9.]* ms")
-            echo -e "${GREEN}✅ ALIVE${NC}   ${YELLOW}Latency:${NC} ${LAT:-n/a}${EL}"
-            echo -e "$PING_LINE${EL}"
+            put "$ROW_STATUS" "${GREEN}✅ ALIVE${NC}   ${YELLOW}Latency:${NC} ${WHITE}${LAT:-n/a}${NC}"
+            put "$ROW_REPLY"  "${PING_LINE}"
         else
-            echo -e "${RED}💀 TARGET UNRESPONSIVE!${NC}${EL}"
-            echo -e "${EL}"
+            put "$ROW_STATUS" "${RED}💀 TARGET UNRESPONSIVE!${NC}"
+            put "$ROW_REPLY"  ""
         fi
-
-        echo -e "${EL}"
-        echo -e "${YELLOW}⏱️  Updated: $(date +%H:%M:%S)  (every ${REFRESH}s)${NC}${EL}"
-        printf "${CLR_BELOW}"   # wipe any leftover lines from a previous larger frame
+        put "$ROW_TIME" "${YELLOW}⏱️  Updated: $(date +%H:%M:%S)${NC}"
         sleep "$REFRESH"
     done
 }
 
-# Monitor Network
+# ============================================================================
+#  NETWORK MODE
+# ============================================================================
+draw_static_network() {
+    printf "${CLR_ALL}"
+    CUR=1
+    put $((CUR++)) "${GREEN}📡 Live network tracking: ${WHITE}$INTERFACE${NC}"
+    put $((CUR++)) "${YELLOW}Press Ctrl+C to stop   (updates every ${REFRESH}s)${NC}"
+    put $((CUR++)) ""
+    put $((CUR++)) "${CYAN}${SEP}${NC}"
+    put $((CUR++)) "${WHITE}📡 THROUGHPUT (live)${NC}"
+    put $((CUR++)) "${CYAN}${SEP}${NC}"
+    ROW_RX=$((CUR++))
+    ROW_TX=$((CUR++))
+    put $((CUR++)) ""
+    ROW_NET0=$((CUR++))
+    ROW_NET1=$((CUR++))
+    put $((CUR++)) ""
+    ROW_CONN=$((CUR++))
+    ROW_HPING=$((CUR++))
+    put $((CUR++)) ""
+    ROW_TIME=$((CUR++))
+}
+
 monitor_network() {
-    hide_cursor
-    printf "${CLR_BELOW}"
-
-    # Prime the throughput counters so the first frame shows a real rate
+    screen_init
     read_bytes "$INTERFACE"; RX_PREV=$RX_NOW; TX_PREV=$TX_NOW; TS_PREV=$(date +%s.%N)
+    draw_static_network
+    trap 'NEED_REDRAW=1' SIGWINCH
 
     while true; do
-        printf "${HOME}"
+        [ "$NEED_REDRAW" = 1 ] && { NEED_REDRAW=0; screen_init; draw_static_network; }
 
-        # Live throughput: byte deltas divided by the ACTUAL elapsed time
-        read_bytes "$INTERFACE"; TS_NOW=$(date +%s.%N)
-        RX_RATE=$(awk "BEGIN{dt=$TS_NOW-$TS_PREV; if(dt<=0)dt=$REFRESH; r=($RX_NOW-$RX_PREV)/dt; if(r<0)r=0; printf \"%d\", r}")
-        TX_RATE=$(awk "BEGIN{dt=$TS_NOW-$TS_PREV; if(dt<=0)dt=$REFRESH; r=($TX_NOW-$TX_PREV)/dt; if(r<0)r=0; printf \"%d\", r}")
-        RX_PREV=$RX_NOW; TX_PREV=$TX_NOW; TS_PREV=$TS_NOW
-
-        echo -e "${GREEN}📡 Monitoring network: $INTERFACE${NC}${EL}"
-        echo -e "${YELLOW}Press Ctrl+C to stop${NC}${EL}"
-        echo -e "${EL}"
-        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}${EL}"
-        echo -e "${WHITE}📡 NETWORK STATS ($INTERFACE)${NC}${EL}"
-        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}${EL}"
-
-        # Real-time throughput (the numbers that change live)
-        echo -e "${YELLOW}⬇️  RX Rate:${NC} $(human_rate "$RX_RATE")${EL}"
-        echo -e "${YELLOW}⬆️  TX Rate:${NC} $(human_rate "$TX_RATE")${EL}"
-        echo -e "${EL}"
-
-        ifconfig "$INTERFACE" 2>/dev/null | grep -E "TX packets|RX packets|TX bytes|RX bytes" | while IFS= read -r line; do
-            echo -e "${line}${EL}"
-        done
-        echo -e "${EL}"
-
-        # Active connections
+        calc_rates
+        mapfile -t NET < <(ifconfig "$INTERFACE" 2>/dev/null | grep -E "TX packets|RX packets")
         CONNECTIONS=$(netstat -an 2>/dev/null | grep -c ESTABLISHED)
-        echo -e "${YELLOW}Active Connections:${NC} $CONNECTIONS${EL}"
-
-        # hping3 processes
         HPING_COUNT=$(pgrep -c hping3 2>/dev/null || echo 0)
-        echo -e "${YELLOW}hping3 Processes:${NC} $HPING_COUNT${EL}"
 
-        echo -e "${EL}"
-        echo -e "${YELLOW}⏱️  Updated: $(date +%H:%M:%S)  (every ${REFRESH}s)${NC}${EL}"
-        printf "${CLR_BELOW}"
+        put "$ROW_RX"    "${YELLOW}⬇️  RX Rate:${NC} ${WHITE}$(human_rate "$RX_RATE")${NC}"
+        put "$ROW_TX"    "${YELLOW}⬆️  TX Rate:${NC} ${WHITE}$(human_rate "$TX_RATE")${NC}"
+        put "$ROW_NET0"  "${NET[0]}"
+        put "$ROW_NET1"  "${NET[1]}"
+        put "$ROW_CONN"  "${YELLOW}Active Connections:${NC} ${WHITE}$CONNECTIONS${NC}"
+        put "$ROW_HPING" "${YELLOW}hping3 Processes:${NC} ${WHITE}$HPING_COUNT${NC}"
+        put "$ROW_TIME"  "${YELLOW}⏱️  Updated: $(date +%H:%M:%S)${NC}"
         sleep "$REFRESH"
     done
 }
 
-# Monitor System
+# ============================================================================
+#  SYSTEM MODE
+# ============================================================================
+draw_static_system() {
+    printf "${CLR_ALL}"
+    CUR=1
+    put $((CUR++)) "${GREEN}💻 Live system tracking${NC}"
+    put $((CUR++)) "${YELLOW}Press Ctrl+C to stop   (updates every ${REFRESH}s)${NC}"
+    put $((CUR++)) ""
+    put $((CUR++)) "${CYAN}${SEP}${NC}"
+    put $((CUR++)) "${WHITE}💻 SYSTEM RESOURCES${NC}"
+    put $((CUR++)) "${CYAN}${SEP}${NC}"
+    ROW_CPU=$((CUR++))
+    ROW_MEM=$((CUR++))
+    ROW_LOAD=$((CUR++))
+    put $((CUR++)) ""
+    put $((CUR++)) "${YELLOW}Attack Processes:${NC}"
+    ROW_HPING=$((CUR++))
+    ROW_HTTP=$((CUR++))
+    put $((CUR++)) ""
+    put $((CUR++)) "${YELLOW}Top CPU Processes:${NC}"
+    ROW_TOP=()
+    for _ in 1 2 3 4 5; do ROW_TOP+=("$((CUR++))"); done
+    put $((CUR++)) ""
+    ROW_TIME=$((CUR++))
+}
+
 monitor_system() {
-    hide_cursor
-    printf "${CLR_BELOW}"
+    screen_init
+    draw_static_system
+    trap 'NEED_REDRAW=1' SIGWINCH
 
     while true; do
-        printf "${HOME}"
+        [ "$NEED_REDRAW" = 1 ] && { NEED_REDRAW=0; screen_init; draw_static_system; }
 
-        echo -e "${GREEN}💻 Monitoring system resources${NC}${EL}"
-        echo -e "${YELLOW}Press Ctrl+C to stop${NC}${EL}"
-        echo -e "${EL}"
-        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}${EL}"
-        echo -e "${WHITE}💻 SYSTEM RESOURCES${NC}${EL}"
-        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}${EL}"
-
-        # CPU
-        CPU=$(top -bn1 | head -3 | grep Cpu | awk '{print $2}')
-        echo -e "${YELLOW}CPU Usage:${NC} ${CPU:-0}%${EL}"
-
-        # Memory
-        MEM=$(free -h | grep Mem | awk '{print $3 "/" $2}')
-        echo -e "${YELLOW}Memory:${NC} $MEM${EL}"
-
-        # Load
+        CPU=$(top -bn1 | grep -m1 Cpu | awk '{print $2}')
+        MEM=$(free -h | awk '/Mem/{print $3 "/" $2}')
         LOAD=$(uptime | awk -F'load average:' '{print $2}')
-        echo -e "${YELLOW}Load Average:${NC}$LOAD${EL}"
-
-        # Processes
         HPING_COUNT=$(pgrep -c hping3 2>/dev/null || echo 0)
         HTTP_COUNT=$(pgrep -fc http_flood.py 2>/dev/null || echo 0)
-        echo -e "${EL}"
-        echo -e "${YELLOW}Attack Processes:${NC}${EL}"
-        echo -e "  hping3: $HPING_COUNT${EL}"
-        echo -e "  HTTP:   $HTTP_COUNT${EL}"
+        mapfile -t TOPP < <(ps aux --sort=-%cpu | head -6 | tail -5 | awk '{print "  " $11 " - " $3 "%"}')
 
-        # Top processes
-        echo -e "${EL}"
-        echo -e "${YELLOW}Top CPU Processes:${NC}${EL}"
-        ps aux --sort=-%cpu | head -6 | tail -5 | awk '{print "  " $11 " - " $3 "%"}' | while IFS= read -r line; do
-            echo -e "${line}${EL}"
-        done
-
-        echo -e "${EL}"
-        echo -e "${YELLOW}⏱️  Updated: $(date +%H:%M:%S)  (every ${REFRESH}s)${NC}${EL}"
-        printf "${CLR_BELOW}"
+        put "$ROW_CPU"   "${YELLOW}CPU Usage:${NC} ${WHITE}${CPU:-0}%${NC}"
+        put "$ROW_MEM"   "${YELLOW}Memory:${NC} ${WHITE}$MEM${NC}"
+        put "$ROW_LOAD"  "${YELLOW}Load Average:${NC}${WHITE}$LOAD${NC}"
+        put "$ROW_HPING" "  hping3: ${WHITE}$HPING_COUNT${NC}"
+        put "$ROW_HTTP"  "  HTTP:   ${WHITE}$HTTP_COUNT${NC}"
+        for i in 0 1 2 3 4; do put "${ROW_TOP[$i]}" "${TOPP[$i]}"; done
+        put "$ROW_TIME"  "${YELLOW}⏱️  Updated: $(date +%H:%M:%S)${NC}"
         sleep "$REFRESH"
     done
 }
 
-# Monitor Full
+# ============================================================================
+#  FULL MODE  (default dashboard)
+# ============================================================================
+draw_static_full() {
+    local rows; rows=$(term_rows)
+    SHOW_BANNER=0; [ "$rows" -ge 40 ] && SHOW_BANNER=1
+
+    printf "${CLR_ALL}"
+    CUR=1
+    if [ "$SHOW_BANNER" = 1 ]; then
+        draw_banner_at_top
+        CUR=16
+    fi
+    put $((CUR++)) "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    put $((CUR++)) "${WHITE}                    ☢️  hexxFlood MONITOR  ☢️${NC}"
+    put $((CUR++)) "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    put $((CUR++)) ""
+    put $((CUR++)) "${YELLOW}📍 TARGET:${NC} ${WHITE}$TARGET${NC}"
+    ROW_RESP=$((CUR++))
+    put $((CUR++)) ""
+    put $((CUR++)) "${YELLOW}📡 NETWORK ($INTERFACE):${NC}"
+    ROW_RATE=$((CUR++))
+    ROW_NET0=$((CUR++))
+    ROW_NET1=$((CUR++))
+    put $((CUR++)) ""
+    put $((CUR++)) "${YELLOW}🔢 Active Processes:${NC}"
+    ROW_HPING=$((CUR++))
+    ROW_HTTP=$((CUR++))
+    put $((CUR++)) ""
+    ROW_CPU=$((CUR++))
+    ROW_MEM=$((CUR++))
+    ROW_LOAD=$((CUR++))
+    put $((CUR++)) ""
+    put $((CUR++)) "${CYAN}${SEP}${NC}"
+    ROW_TIME=$((CUR++))
+    put $((CUR++)) "${CYAN}${SEP}${NC}"
+    put $((CUR++)) "${RED}Press Ctrl+C to stop monitoring${NC}   (refresh: every ${REFRESH}s)"
+}
+
 monitor_full() {
-    hide_cursor
-    printf "${CLR_BELOW}"   # clear the screen ONCE; the loop then repaints in place
-
-    # Prime throughput counters for the live RX/TX rate
+    screen_init
     read_bytes "$INTERFACE"; RX_PREV=$RX_NOW; TX_PREV=$TX_NOW; TS_PREV=$(date +%s.%N)
+    draw_static_full
+    trap 'NEED_REDRAW=1' SIGWINCH
 
     while true; do
-        # Move cursor home and overwrite the previous frame — no clear, so no flicker.
-        # Each line ends with ${EL} to wipe its own leftovers; ${CLR_BELOW} at the
-        # end removes any trailing lines from a previously larger frame.
-        printf "${HOME}"
-        banner_frame
+        [ "$NEED_REDRAW" = 1 ] && { NEED_REDRAW=0; screen_init; draw_static_full; }
 
-        echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}${EL}"
-        echo -e "${WHITE}                    ☢️  hexxFlood MONITOR  ☢️${NC}${EL}"
-        echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}${EL}"
-        echo -e "${EL}"
-
-        # Live throughput: byte deltas divided by the ACTUAL elapsed time
-        read_bytes "$INTERFACE"; TS_NOW=$(date +%s.%N)
-        RX_RATE=$(awk "BEGIN{dt=$TS_NOW-$TS_PREV; if(dt<=0)dt=$REFRESH; r=($RX_NOW-$RX_PREV)/dt; if(r<0)r=0; printf \"%d\", r}")
-        TX_RATE=$(awk "BEGIN{dt=$TS_NOW-$TS_PREV; if(dt<=0)dt=$REFRESH; r=($TX_NOW-$TX_PREV)/dt; if(r<0)r=0; printf \"%d\", r}")
-        RX_PREV=$RX_NOW; TX_PREV=$TX_NOW; TS_PREV=$TS_NOW
-
-        # Target Status (1s timeout so a dead target never stalls the refresh)
-        echo -e "${YELLOW}📍 TARGET:${NC} $TARGET${EL}"
+        calc_rates
         PING_RESULT=$(ping -c 1 -W 1 "$TARGET" 2>/dev/null | grep -o "time=[0-9.]* ms" | head -1)
-        [ -z "$PING_RESULT" ] && PING_RESULT="💀 TARGET UNRESPONSIVE!"
-        echo -e "${YELLOW}📊 Response:${NC} $PING_RESULT${EL}"
-        echo -e "${EL}"
-
-        # Network Stats + live throughput
-        echo -e "${YELLOW}📡 NETWORK ($INTERFACE):${NC}${EL}"
-        echo -e "   ${YELLOW}⬇️  RX Rate:${NC} $(human_rate "$RX_RATE")   ${YELLOW}⬆️  TX Rate:${NC} $(human_rate "$TX_RATE")${EL}"
-        ifconfig "$INTERFACE" 2>/dev/null | grep -E "TX packets|RX packets" | while IFS= read -r line; do
-            echo -e "${line}${EL}"
-        done
-        echo -e "${EL}"
-
-        # Process Count
+        if [ -z "$PING_RESULT" ]; then PING_RESULT="${RED}💀 TARGET UNRESPONSIVE!${NC}"
+        else PING_RESULT="${GREEN}$PING_RESULT${NC}"; fi
+        mapfile -t NET < <(ifconfig "$INTERFACE" 2>/dev/null | grep -E "TX packets|RX packets")
         HPING_COUNT=$(pgrep -c hping3 2>/dev/null || echo 0)
         HTTP_COUNT=$(pgrep -fc http_flood.py 2>/dev/null || echo 0)
-        echo -e "${YELLOW}🔢 Active Processes:${NC}${EL}"
-        echo -e "   hping3: $HPING_COUNT${EL}"
-        echo -e "   HTTP:   $HTTP_COUNT${EL}"
-        echo -e "${EL}"
-
-        # CPU
-        CPU=$(top -bn1 | head -5 | grep Cpu | awk '{print $2}')
-        echo -e "${YELLOW}💻 CPU Usage:${NC} ${CPU:-0}%${EL}"
-        echo -e "${EL}"
-
-        # Memory
-        MEM=$(free -h | grep Mem | awk '{print $3 "/" $2}')
-        echo -e "${YELLOW}🧠 Memory:${NC} $MEM used${EL}"
-        echo -e "${EL}"
-
-        # System Load
+        CPU=$(top -bn1 | grep -m1 Cpu | awk '{print $2}')
+        MEM=$(free -h | awk '/Mem/{print $3 "/" $2}')
         LOAD=$(uptime | awk -F'load average:' '{print $2}')
-        echo -e "${YELLOW}📊 Load Average:${NC}$LOAD${EL}"
-        echo -e "${EL}"
 
-        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}${EL}"
-        echo -e "${WHITE}⏱️  Updated: $(date +%H:%M:%S)${NC}${EL}"
-        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}${EL}"
-        echo -e "${RED}Press Ctrl+C to stop monitoring${NC}   (refresh: every ${REFRESH}s)${EL}"
-
-        printf "${CLR_BELOW}"
+        put "$ROW_RESP"  "${YELLOW}📊 Response:${NC} $PING_RESULT"
+        put "$ROW_RATE"  "   ${YELLOW}⬇️  RX:${NC} ${WHITE}$(human_rate "$RX_RATE")${NC}   ${YELLOW}⬆️  TX:${NC} ${WHITE}$(human_rate "$TX_RATE")${NC}"
+        put "$ROW_NET0"  "  ${NET[0]}"
+        put "$ROW_NET1"  "  ${NET[1]}"
+        put "$ROW_HPING" "   hping3: ${WHITE}$HPING_COUNT${NC}"
+        put "$ROW_HTTP"  "   HTTP:   ${WHITE}$HTTP_COUNT${NC}"
+        put "$ROW_CPU"   "${YELLOW}💻 CPU Usage:${NC} ${WHITE}${CPU:-0}%${NC}"
+        put "$ROW_MEM"   "${YELLOW}🧠 Memory:${NC} ${WHITE}$MEM${NC} used"
+        put "$ROW_LOAD"  "${YELLOW}📊 Load Average:${NC}${WHITE}$LOAD${NC}"
+        put "$ROW_TIME"  "${WHITE}⏱️  Updated: $(date +%H:%M:%S)${NC}"
         sleep "$REFRESH"
     done
 }
 
-# Monitor Log
+# ============================================================================
+#  LOG MODE  (writes to file, no live screen)
+# ============================================================================
 monitor_log() {
     LOG_FILE="hexxFlood_monitor_$(date +%Y%m%d_%H%M%S).log"
     echo -e "${GREEN}📝 Logging to: $LOG_FILE${NC}"
     echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
     echo ""
-    
+
     while true; do
-        echo "=== $(date) ===" >> $LOG_FILE
-        echo "Target: $TARGET" >> $LOG_FILE
-        ping -c 1 $TARGET 2>/dev/null >> $LOG_FILE
-        echo "Network Stats:" >> $LOG_FILE
-        ifconfig $INTERFACE 2>/dev/null | grep -E "TX packets|RX packets" >> $LOG_FILE
-        echo "Processes: $(ps aux | grep -c hping3)" >> $LOG_FILE
-        echo "" >> $LOG_FILE
-        
+        {
+            echo "=== $(date) ==="
+            echo "Target: $TARGET"
+            ping -c 1 -W 1 "$TARGET" 2>/dev/null
+            echo "Network Stats:"
+            ifconfig "$INTERFACE" 2>/dev/null | grep -E "TX packets|RX packets"
+            echo "Processes: $(pgrep -c hping3 2>/dev/null || echo 0)"
+            echo ""
+        } >> "$LOG_FILE"
+
         echo -e "${GREEN}✅ Logged at $(date +%H:%M:%S)${NC}"
-        sleep 5
+        sleep "$REFRESH"
     done
 }
 
 # Cleanup
 cleanup() {
-    show_cursor   # restore cursor hidden by the in-place monitors
-    echo -e "\n${YELLOW}🛑 Stopping monitor...${NC}"
+    screen_done   # restore wrap + cursor hidden by the live monitors
+    printf "\033[999;1H\n"
+    echo -e "${YELLOW}🛑 Stopping monitor...${NC}"
     echo -e "${GREEN}✅ Monitor stopped${NC}"
     exit 0
 }
@@ -384,7 +418,7 @@ cleanup() {
 # Main
 main() {
     trap cleanup SIGINT SIGTERM
-    trap show_cursor EXIT   # never leave the terminal with a hidden cursor
+    trap screen_done EXIT   # never leave the terminal with wrap off / cursor hidden
 
     parse_args "$@"
 
@@ -395,21 +429,11 @@ main() {
     fi
 
     case $MONITOR_MODE in
-        ping)
-            monitor_ping
-            ;;
-        network)
-            monitor_network
-            ;;
-        system)
-            monitor_system
-            ;;
-        full)
-            monitor_full
-            ;;
-        log)
-            monitor_log
-            ;;
+        ping)    monitor_ping ;;
+        network) monitor_network ;;
+        system)  monitor_system ;;
+        full)    monitor_full ;;
+        log)     monitor_log ;;
         *)
             echo -e "${RED}Invalid mode: $MONITOR_MODE${NC}"
             show_help
