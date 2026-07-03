@@ -1,0 +1,11 @@
+.hexxFlood_config
+*.log
+logs/
+pycache/
+*.pyc
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.idea/
+.vscode/
