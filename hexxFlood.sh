@@ -473,10 +473,63 @@ set_mode() {
     esac
 }
 
+# Cumulative TX packet / byte counters straight from the kernel (/sys). This is
+# far lighter and more exact than forking ifconfig every tick, so the live
+# monitor costs almost nothing and never steals cycles from the flood.
 get_packet_count() {
-    local c
-    c=$(ifconfig "${1:-$INTERFACE}" 2>/dev/null | grep "TX packets" | awk '{print $5}' | head -1)
+    local iface="${1:-$INTERFACE}" c
+    c=$(cat "/sys/class/net/$iface/statistics/tx_packets" 2>/dev/null)
+    [ -z "$c" ] && c=$(ifconfig "$iface" 2>/dev/null | grep "TX packets" | awk '{print $5}' | head -1)
     echo "${c:-0}"
+}
+
+get_tx_bytes() {
+    local iface="${1:-$INTERFACE}" c
+    c=$(cat "/sys/class/net/$iface/statistics/tx_bytes" 2>/dev/null)
+    echo "${c:-0}"
+}
+
+# Instantaneous CPU-busy % from /proc/stat deltas (no `top` fork per tick).
+# Uses the CPU_PREV_* globals to remember the previous sample.
+cpu_busy_pct() {
+    local a b c d e f g rest idle total dt di
+    read -r _ a b c d e f g rest < /proc/stat
+    idle=$(( d + e ))
+    total=$(( a + b + c + d + e + f + g ))
+    dt=$(( total - ${CPU_PREV_TOTAL:-0} ))
+    di=$(( idle - ${CPU_PREV_IDLE:-0} ))
+    CPU_PREV_TOTAL=$total; CPU_PREV_IDLE=$idle
+    if [ "$dt" -le 0 ]; then echo 0; else echo $(( (100 * (dt - di)) / dt )); fi
+}
+
+# Used/total memory as a compact "1.2/7.6G" string, read from /proc/meminfo.
+mem_used_str() {
+    awk '/MemTotal:/{t=$2} /MemAvailable:/{a=$2}
+         END{printf "%.1f/%.1fG", (t-a)/1048576, t/1048576}' /proc/meminfo 2>/dev/null
+}
+
+# Render a proportional bar: $1=value $2=max $3=width. Scales to max, clamps.
+draw_bar() {
+    local v=$1 max=$2 w=$3 filled i out=""
+    [ "$max" -le 0 ] && max=1
+    filled=$(( v * w / max )); [ $filled -gt $w ] && filled=$w; [ $filled -lt 0 ] && filled=0
+    for ((i = 0; i < filled; i++)); do out+="█"; done
+    for ((i = filled; i < w; i++)); do out+="░"; done
+    printf '%s' "$out"
+}
+
+# Print one dashboard line: expand escapes, clear to end-of-line, then CR+LF so
+# every line starts at column 0 even if a child briefly touched the TTY.
+pln() { printf '%b\033[K\r\n' "$1"; }
+
+# Bits/sec -> human "12.3 Mbps" / "1.23 Gbps".
+fmt_bps() {
+    awk -v b="$1" 'BEGIN{
+        if (b>=1e9)      printf "%.2f Gbps", b/1e9;
+        else if (b>=1e6) printf "%.1f Mbps", b/1e6;
+        else if (b>=1e3) printf "%.1f Kbps", b/1e3;
+        else             printf "%d bps", b;
+    }'
 }
 
 monitor_attack() {
@@ -484,90 +537,127 @@ monitor_attack() {
     # packet totals count from the real attack start; fall back if unset.
     local start_time=${ATTACK_START_TIME:-$(date +%s)}
     local initial_packets=${ATTACK_INITIAL_PACKETS:-$(get_packet_count)}
+    local initial_bytes=$(get_tx_bytes)
     local duration=$ATTACK_DURATION
     ATTACK_START_TIME=$start_time
     ATTACK_INITIAL_PACKETS=$initial_packets
 
-    # Duration label for the header
     local dur_disp="∞"; [ "$duration" -gt 0 ] && dur_disp="${duration}s"
+    local tgt_disp="$TARGET"
+    [ "$TARGET_TYPE" = "url" ] && tgt_disp="$URL  (${TARGET})"
 
-    # ---- streaming header: printed ONCE; the whole run scrolls below it ----
-    ( stty sane </dev/tty ) >/dev/null 2>&1 || true   # clean terminal before streaming
-    show_banner
-    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${WHITE}                 ☢️  hexxFlood LIVE STREAM  ☢️${NC}"
-    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
-    if [ "$TARGET_TYPE" = "url" ]; then
-        echo -e "${YELLOW}📍 Target:${NC} $URL  ${CYAN}(${TARGET})${NC}"
-    else
-        echo -e "${YELLOW}📍 Target:${NC} $TARGET"
-    fi
-    echo -e "${YELLOW}🧵 Threads:${NC} $THREADS   ${YELLOW}📦 Packet:${NC} ${PACKET_SIZE}B   ${YELLOW}🕒 Duration:${NC} ${dur_disp}"
-    echo -e "${RED}Press Ctrl+C to stop — the full run scrolls below${NC}"
+    # hping3 banner (proof the engine launched against the target/size/mode).
+    local hbanner=""
+    [ -s "${HPING_LOG:-/nonexistent}" ] && hbanner=$(head -1 "$HPING_LOG")
 
-    # Surface the real hping3 banner (proof the flood engine actually launched
-    # against the target with the requested packet size / mode).
-    if [ -s "${HPING_LOG:-/nonexistent}" ]; then
-        echo -e "${PURPLE}hping3 »${NC} $(head -1 "$HPING_LOG")"
-    fi
-    echo -e "${CYAN}────────────────────────────────────────────────────────────────${NC}"
+    # ---- enter live-dashboard mode: hide cursor, no line-wrap, clean slate ----
+    DASHBOARD_ACTIVE=1
+    ( stty sane </dev/tty ) >/dev/null 2>&1 || true
+    tput civis 2>/dev/null
+    printf '\033[?7l\033[2J\033[H'    # nowrap + clear + home
 
-    # Track the previous tick so we can show a LIVE (instantaneous) packet rate
-    # instead of only a lifetime average — a live pps that climbs is the clearest
-    # signal that the attack is actually sending.
-    local prev_packets=$initial_packets
-    local prev_time=$start_time
+    # Prime CPU + rate baselines so the first frame shows a real delta.
+    cpu_busy_pct >/dev/null
+    local prev_packets=$initial_packets prev_bytes=$initial_bytes prev_time=$start_time
+    local pps_max=1
+    local -a evlog=()          # rolling command-output log (last few lines)
 
+    local REFRESH=1
     while true; do
-        if [ $duration -gt 0 ]; then
-            local elapsed_chk=$(( $(date +%s) - start_time ))
-            if [ $elapsed_chk -ge $duration ]; then
-                echo -e "${YELLOW}⏱️  Attack duration completed${NC}"
-                break
-            fi
+        local now=$(date +%s)
+        local elapsed=$(( now - start_time ))
+
+        if [ $duration -gt 0 ] && [ $elapsed -ge $duration ]; then
+            break
         fi
 
-        local now=$(date +%s)
-        local current_packets=$(get_packet_count)
-        local elapsed=$(( now - start_time ))
-        local packets_sent=$((current_packets - initial_packets))
+        local cur_packets=$(get_packet_count)
+        local cur_bytes=$(get_tx_bytes)
+        local packets_sent=$(( cur_packets - initial_packets ))
+        [ $packets_sent -lt 0 ] && packets_sent=0
 
-        # Instantaneous rate = packets since the last tick / seconds since it.
         local dt=$(( now - prev_time )); [ $dt -le 0 ] && dt=1
-        local dpkts=$(( current_packets - prev_packets ))
-        [ $dpkts -lt 0 ] && dpkts=0
-        local pps=$(( dpkts / dt ))                    # live pps (this tick)
-        local avg=0
-        [ $elapsed -gt 0 ] && avg=$(( packets_sent / elapsed ))   # lifetime avg
-        prev_packets=$current_packets
-        prev_time=$now
+        local dpkts=$(( cur_packets - prev_packets )); [ $dpkts -lt 0 ] && dpkts=0
+        local dbytes=$(( cur_bytes - prev_bytes )); [ $dbytes -lt 0 ] && dbytes=0
+        local pps=$(( dpkts / dt ))                         # live pps
+        local avg=0; [ $elapsed -gt 0 ] && avg=$(( packets_sent / elapsed ))
+        local bps=$(( (dbytes / dt) * 8 ))                 # live bits/sec (real NIC)
+        prev_packets=$cur_packets; prev_bytes=$cur_bytes; prev_time=$now
+        [ $pps -gt $pps_max ] && pps_max=$pps
 
-        local bw=0
-        [ $pps -gt 0 ] && bw=$(( (pps * PACKET_SIZE * 8) / 1000000 ))
-
-        local resp=$(ping -c 1 -W 1 $TARGET 2>/dev/null | grep -o "time=[0-9.]* ms" | head -1)
-        if [ -z "$resp" ]; then resp="${RED}DOWN${NC}"; else resp="${GREEN}${resp}${NC}"; fi
-
-        local hcount=$(pgrep -c hping3 2>/dev/null || echo 0)
+        # Per-attack-type hping3 process breakdown (real, from the process list).
+        local c_syn=0 c_udp=0 c_icmp=0 c_ack=0 c_rst=0 c_fin=0 hcount=0 line
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            hcount=$(( hcount + 1 ))
+            case " $line " in
+                *" -S "*) c_syn=$((c_syn+1)) ;;
+                *" -2 "*) c_udp=$((c_udp+1)) ;;
+                *" -1 "*) c_icmp=$((c_icmp+1)) ;;
+                *" -A "*) c_ack=$((c_ack+1)) ;;
+                *" -R "*) c_rst=$((c_rst+1)) ;;
+                *" -F "*) c_fin=$((c_fin+1)) ;;
+            esac
+        done < <(pgrep -a hping3 2>/dev/null)
         local httpc=$(pgrep -cf http_flood.py 2>/dev/null || echo 0)
-        local cpu=$(top -bn1 | grep -m1 Cpu | awk '{print $2}')
 
-        # Clear "is it working?" indicator: green when packets are climbing and
-        # flood processes are alive, red idle otherwise.
+        local cpu=$(cpu_busy_pct)
+        local mem=$(mem_used_str)
+        local conns=$(ss -tan 2>/dev/null | grep -c ESTAB)
+
+        # Real ping output line for the command-output panel.
+        local pingraw
+        pingraw=$(ping -c 1 -W 1 "$TARGET" 2>/dev/null | sed -n '2p')
+        local respcol
+        if [ -n "$pingraw" ]; then
+            respcol="${GREEN}$(echo "$pingraw" | grep -o 'time=[0-9.]* ms' | head -1)${NC}"
+            evlog+=("${GREEN}✓${NC} $(date +%H:%M:%S) ${pingraw}")
+        else
+            respcol="${RED}DOWN / no reply${NC}"
+            evlog+=("${RED}✗${NC} $(date +%H:%M:%S) ping ${TARGET}: request timed out")
+        fi
+        [ ${#evlog[@]} -gt 5 ] && evlog=("${evlog[@]: -5}")
+
         local status
         if { [ "$hcount" -gt 0 ] || [ "$httpc" -gt 0 ]; } && [ $dpkts -gt 0 ]; then
             status="${GREEN}⚡ SENDING${NC}"
         else
-            status="${RED}·· idle  ${NC}"
+            status="${RED}·· IDLE  ${NC}"
         fi
+        local rem="${dur_disp}"
+        [ $duration -gt 0 ] && rem="$(( duration - elapsed ))s left"
 
-        local rem=""
-        [ $duration -gt 0 ] && rem="  ${YELLOW}rem${NC} $((duration - elapsed))s"
+        # ---- render frame (cursor home; each line clears to EOL; no flicker) --
+        local cols; cols=$(tput cols 2>/dev/null); [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+        local barw=$(( cols - 40 )); [ $barw -gt 40 ] && barw=40; [ $barw -lt 10 ] && barw=10
+        local div; div=$(printf '─%.0s' $(seq 1 $(( cols>80?80:cols )) ))
+        local bar; bar=$(draw_bar "$pps" "$pps_max" "$barw")
 
-        # One streaming line per tick -> the whole run scrolls by
-        echo -e "${CYAN}[$(date +%H:%M:%S)]${NC} ${status}  ${YELLOW}t${NC} ${elapsed}s${rem}  ${YELLOW}pkts${NC} $(printf "%'d" $packets_sent)  ${YELLOW}pps${NC} $(printf "%'d" $pps)  ${YELLOW}avg${NC} $(printf "%'d" $avg)  ${YELLOW}bw${NC} ${bw}Mbps  ${YELLOW}resp${NC} ${resp}  ${YELLOW}cpu${NC} ${cpu:-0}%  ${YELLOW}proc${NC} h:${hcount} w:${httpc}"
+        { printf '\033[H'
+          pln "${RED}☢️  hexxFlood LIVE  ${NC}${CYAN}$(date +%H:%M:%S)${NC}   ${status}"
+          pln "${CYAN}${div}${NC}"
+          pln "${YELLOW}🎯 Target :${NC} ${WHITE}${tgt_disp}${NC}"
+          pln "${YELLOW}⚙️  Config :${NC} iface ${WHITE}${INTERFACE}${NC}  mode ${WHITE}${MODE:-custom}${NC}  types ${WHITE}${ATTACK_TYPES}${NC}  pkt ${WHITE}${PACKET_SIZE}B${NC}"
+          pln "${YELLOW}⏱️  Time   :${NC} ${WHITE}${elapsed}s${NC}  (${rem})"
+          pln "${CYAN}${div}${NC}"
+          pln "${YELLOW}📦 Packets:${NC} ${WHITE}$(printf "%'d" "$packets_sent")${NC} sent"
+          pln "${YELLOW}⚡ Live   :${NC} ${GREEN}$(printf "%'d" "$pps")${NC} pps  ${CYAN}[${bar}]${NC}"
+          pln "${YELLOW}📈 Avg    :${NC} ${WHITE}$(printf "%'d" "$avg")${NC} pps      ${YELLOW}🌐 TX:${NC} ${WHITE}$(fmt_bps "$bps")${NC}"
+          pln "${YELLOW}🩺 Target :${NC} ${respcol}      ${YELLOW}🔌 Est.conn:${NC} ${WHITE}${conns}${NC}"
+          pln "${YELLOW}🖥️  Host   :${NC} cpu ${WHITE}${cpu}%${NC}  mem ${WHITE}${mem}${NC}"
+          pln "${CYAN}${div}${NC}"
+          pln "${YELLOW}🧨 hping3 :${NC} ${WHITE}${hcount}${NC} procs  →  ${WHITE}syn:${c_syn} udp:${c_udp} icmp:${c_icmp} ack:${c_ack} rst:${c_rst} fin:${c_fin}${NC}   ${YELLOW}http:${NC} ${WHITE}${httpc}${NC}"
+          [ -n "$hbanner" ] && pln "${PURPLE}   ┗ ${hbanner}${NC}"
+          pln "${CYAN}${div}${NC}"
+          pln "${WHITE}📜 Live command output${NC}"
+          local e
+          for e in "${evlog[@]}"; do pln "   ${e}"; done
+          pln ""
+          pln "${RED}Press Ctrl+C to stop${NC}"
+          printf '\033[J'               # clear anything left below the frame
+        }
 
-        sleep 2
+        sleep "$REFRESH"
     done
     # Duration finished: reuse the same clean, structured shutdown as Ctrl+C
     cleanup
@@ -583,7 +673,12 @@ cleanup() {
     # doing a carriage return -> the "staircase" mess). Restore the REAL terminal
     # (target /dev/tty, not the script's stdin which may be redirected).
     ( stty sane </dev/tty ) >/dev/null 2>&1 || true
-    printf '\033[?7h\033[?25h\033[0m\r' 2>/dev/null
+    printf '\033[?7h\033[?25h\033[0m\r' 2>/dev/null   # wrap on, cursor on, reset
+    tput cnorm 2>/dev/null
+
+    # If the live dashboard was on-screen, wipe it so the final summary prints
+    # on a clean slate instead of on top of the redrawn frame.
+    [ "${DASHBOARD_ACTIVE:-0}" = 1 ] && printf '\033[2J\033[H'
 
     # Detach background flood jobs so bash won't print async "Killed" notices
     disown -a 2>/dev/null || true

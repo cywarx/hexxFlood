@@ -29,7 +29,7 @@
 - ✅ **Configurable Threads** (1-200)
 - ✅ **Custom Port Selection**
 - ✅ **IP Spoofing**
-- ✅ **Real-time Monitoring** — streaming attack log (whole run scrolls) + optional live `monitor.sh` dashboard
+- ✅ **Real-time Monitoring** — in-terminal live dashboard (pps bar, real NIC throughput, per-type hping3 breakdown, live command output) + optional `monitor.sh` windows
 - ✅ **Automatic Cleanup**
 - ✅ **Configuration Persistence**
 - ✅ **System Optimization**
@@ -132,20 +132,42 @@ sudo ./hexxFlood.sh -u http://192.168.1.14 -T http -p 100
 sudo ./hexxFlood.sh -t 192.168.1.14 -T all -m extreme
 ```
 
-### Live attack output (streaming log)
+### Live attack output (in-terminal dashboard)
 
-While an attack runs, `hexxFlood.sh` prints a **scrolling status log** — a header once,
-then one compact line per interval so the **whole run scrolls by** (nothing is cleared):
+While an attack runs, `hexxFlood.sh` shows a **live dashboard** that refreshes in place
+(~1s) — a live packets-per-second bar, **real NIC throughput**, a per-attack-type `hping3`
+process breakdown, the actual `hping3` banner, and a **rolling panel of real command output**
+(live `ping` replies) so you can confirm the attack is truly landing:
 
 ```text
+☢️  hexxFlood LIVE  18:31:05   ⚡ SENDING
 ────────────────────────────────────────────────────────────────
-[18:31:01] t 12s  rem 48s  pkts 10,806  pps 900  bw 4Mbps  resp time=1.24 ms  cpu 41% mem 4.2Gi/23Gi  proc h:12 w:0
-[18:31:03] t 14s  rem 46s  pkts 12,606  pps 900  bw 4Mbps  resp time=1.31 ms  cpu 43% mem 4.2Gi/23Gi  proc h:12 w:0
-[18:31:05] t 16s  rem 44s  pkts 14,400  pps 900  bw 4Mbps  resp DOWN            cpu 45% mem 4.2Gi/23Gi  proc h:12 w:0
+🎯 Target : 192.168.1.14
+⚙️  Config : iface wlan0  mode high  types syn,udp,icmp,ack,rst,fin  pkt 65495B
+⏱️  Time   : 42s  (∞)
+────────────────────────────────────────────────────────────────
+📦 Packets: 1,234,567 sent
+⚡ Live   : 48,210 pps  [████████████████████████████░░░░]
+📈 Avg    : 29,394 pps      🌐 TX: 2.10 Gbps
+🩺 Target : time=1.24 ms      🔌 Est.conn: 312
+🖥️  Host   : cpu 64%  mem 3.7/23.3G
+────────────────────────────────────────────────────────────────
+🧨 hping3 : 151 procs  →  syn:50 udp:50 icmp:1 ack:50 rst:0 fin:0   http: 0
+   ┗ HPING 192.168.1.14 (wlan0): S set, 40 headers + 65495 data bytes, hping in flood mode
+────────────────────────────────────────────────────────────────
+📜 Live command output
+   ✓ 18:31:04 64 bytes from 192.168.1.14: icmp_seq=1 ttl=64 time=1.24 ms
+   ✗ 18:31:05 ping 192.168.1.14: request timed out
+────────────────────────────────────────────────────────────────
+Press Ctrl+C to stop
 ```
 
-Each line reports the timestamp, elapsed / remaining time, total packets, packets-per-second,
-estimated bandwidth, target ping response (or `DOWN`), CPU/memory, and live attack-process counts.
+- **`⚡ SENDING` / `·· IDLE`** — green only when packets are actively climbing *and* flood
+  processes are alive, so it's obvious at a glance the attack is working.
+- **Live pps + bar** is the instantaneous rate (delta since the last tick), not a lifetime
+  average; **TX** is the interface's real byte-rate straight from `/sys` (not an estimate).
+- The monitor reads counters from `/sys` and `/proc` (no per-tick `top`/`ifconfig` forks), so
+  it costs almost nothing and **never steals throughput from the flood**.
 
 Press **`Ctrl+C`** (or let `-D` elapse) to stop — the terminal is restored cleanly and a
 structured **final summary** (total packets, total time, average PPS) is printed at the end,
