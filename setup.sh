@@ -34,7 +34,7 @@ echo "║   ██║  ██║██║   ██║██║   ██║██
 echo "║   ██████╔╝╚██████╔╝╚██████╔╝██║ ╚═╝ ██║███████║██║  ██║   ██║    ║"
 echo "║   ╚═════╝  ╚═════╝  ╚═════╝ ╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝    ║"
 echo "║                                                                  ║"
-echo "║              Universal Setup Script v3.2                         ║"
+echo "║              Universal Setup Script v3.3                         ║"
 echo "║                   Use Responsibly!                               ║"
 echo "╚══════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
@@ -42,7 +42,13 @@ echo -e "${NC}"
 SCRIPT_DIR="$(pwd)"
 echo -e "${GREEN}✅${NC} Installation directory: $SCRIPT_DIR"
 
-SHELL_TYPE=$(basename "$SHELL")
+# Resolve the real (non-root) user even when run via sudo
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+REAL_HOME="${REAL_HOME:-$HOME}"
+USER_SHELL=$(getent passwd "$REAL_USER" | cut -d: -f7)
+SHELL_TYPE=$(basename "${USER_SHELL:-$SHELL}")
+echo -e "${GREEN}✅${NC} Configuring for user: $REAL_USER ($REAL_HOME)"
 echo -e "${GREEN}✅${NC} Detected shell: $SHELL_TYPE"
 
 echo -e "${GREEN}✅${NC} Updating package list..."
@@ -95,16 +101,16 @@ EOFWRAP"
 sudo chmod +x /usr/local/bin/hexxFlood
 echo -e "${GREEN}✅${NC} Wrapper created at /usr/local/bin/hexxFlood"
 
-echo "$USER ALL=(ALL) NOPASSWD: /usr/local/bin/hexxFlood" | sudo tee /etc/sudoers.d/hexxFlood
+echo "$REAL_USER ALL=(ALL) NOPASSWD: /usr/local/bin/hexxFlood" | sudo tee /etc/sudoers.d/hexxFlood
 sudo chmod 440 /etc/sudoers.d/hexxFlood
 echo -e "${GREEN}✅${NC} Passwordless sudo configured"
 
 if [ "$SHELL_TYPE" = "zsh" ]; then
-    RC_FILE="$HOME/.zshrc"
+    RC_FILE="$REAL_HOME/.zshrc"
 elif [ "$SHELL_TYPE" = "bash" ]; then
-    RC_FILE="$HOME/.bashrc"
+    RC_FILE="$REAL_HOME/.bashrc"
 else
-    RC_FILE="$HOME/.profile"
+    RC_FILE="$REAL_HOME/.profile"
 fi
 
 echo -e "${GREEN}✅${NC} Configuring $SHELL_TYPE environment..."
@@ -145,7 +151,7 @@ echo -e "${GREEN}✅${NC} Added hexxFlood configuration to $RC_FILE"
 
 export PATH=$PATH:/usr/local/bin
 
-cat > ~/.hexxFlood_config << 'EOF3'
+cat > "$REAL_HOME/.hexxFlood_config" << 'EOF3'
 TARGET="192.168.1.14"
 THREADS=50
 PACKET_SIZE=65495
@@ -156,7 +162,11 @@ SPOOF_IP=true
 RANDOM_PORTS=true
 EOF3
 
-echo -e "${GREEN}✅${NC} Configuration saved to ~/.hexxFlood_config"
+# Ensure the real user owns the files we just wrote as root
+chown "$REAL_USER": "$REAL_HOME/.hexxFlood_config" 2>/dev/null || true
+chown "$REAL_USER": "$RC_FILE" 2>/dev/null || true
+
+echo -e "${GREEN}✅${NC} Configuration saved to $REAL_HOME/.hexxFlood_config"
 
 echo -e "${GREEN}✅${NC} Verifying installation..."
 

