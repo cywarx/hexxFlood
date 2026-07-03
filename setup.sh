@@ -140,6 +140,10 @@ _hexxFlood_completion() {
         '-D:Duration'
         '--no-spoof'
         '--fixed-ports'
+        '--monitor:Open live monitor only (no attack)'
+        '--monitor-mode:Monitor mode (ping,network,system,full,log)'
+        '--auto-monitor:Auto-open monitor window(s) on attack start'
+        '--no-monitor:Do not auto-open a monitor window'
         '-h:Help'
     )
     compadd -a commands
@@ -160,6 +164,8 @@ INTERFACE="wlan0"
 ATTACK_DURATION=0
 SPOOF_IP=true
 RANDOM_PORTS=true
+AUTO_MONITOR=true
+MONITOR_WINDOWS="full"
 EOF3
 
 # Ensure the real user owns the files we just wrote as root

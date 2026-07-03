@@ -154,6 +154,40 @@ The repo ships a dedicated **`monitor.sh`** script so you can *demonstrate the i
 attack in real time — perfect for a side-by-side split screen during the NULLCON talk:
 **left pane = attack (`hexxFlood.sh`), right pane = monitor (`monitor.sh`).**
 
+### Zero-effort monitoring — built into `hexxFlood`
+
+You no longer need to open the monitor by hand. It is wired straight into the main tool:
+
+```bash
+# Watch a target only (no attack) — same as running monitor.sh
+hexxFlood --monitor -t 192.168.1.14
+hexxFlood --monitor --monitor-mode ping -t 192.168.1.14
+
+# Launch an attack: a monitor terminal opens AUTOMATICALLY
+hexxFlood -t 192.168.1.14 -m extreme
+
+# Open several monitor windows at once (one per mode)
+hexxFlood -t 192.168.1.14 -m extreme --auto-monitor full,ping,system
+
+# Don't auto-open anything (attack only, current terminal)
+hexxFlood -t 192.168.1.14 -m extreme --no-monitor
+```
+
+| Option | Description |
+|--------|-------------|
+| `--monitor`            | Open the live monitor only, no attack (uses `-t`/`-i`) |
+| `--monitor-mode MODE`  | Mode for `--monitor`: `ping`\|`network`\|`system`\|`full`\|`log` (default `full`) |
+| `--auto-monitor [MODES]` | Auto-open monitor window(s) when an attack starts. `MODES` is comma-separated → one window each. **On by default** (`full`) |
+| `--no-monitor`         | Do not auto-open any monitor window |
+
+The auto-opened windows launch in whatever terminal emulator you have
+(`xterm`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `qterminal`, `kitty`,
+`alacritty`, `tilix`, …) and run as your normal user even though the attack runs under `sudo`.
+
+> **Headless / SSH boxes:** if no graphical display is available, the monitor windows are
+> simply skipped with a notice — **the attack still runs at full power in your single terminal**.
+> Open a monitor by hand in another SSH session with `hexxFlood --monitor -t <ip>` if you want one.
+
 ### Recommended demo layout
 
 ```

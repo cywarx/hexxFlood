@@ -32,9 +32,19 @@ SPOOF_IP=true
 RANDOM_PORTS=true
 TARGET_TYPE="ip"
 
+# Monitoring
+AUTO_MONITOR=true        # auto-open a monitor terminal when an attack starts
+MONITOR_WINDOWS="full"   # comma-separated modes -> one auto window per mode
+MONITOR_MODE="full"      # mode used by standalone --monitor
+RUN_MONITOR_ONLY=false   # set by --monitor to run the monitor and exit
+
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 fi
+
+# Resolve where this script (and monitor.sh) live, even via the wrapper/symlink
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+MONITOR_SCRIPT="$SCRIPT_DIR/monitor.sh"
 
 show_banner() {
     clear
@@ -79,6 +89,13 @@ show_help() {
     echo "  --no-spoof               Disable IP spoofing"
     echo "  --fixed-ports            Use fixed ports"
     echo ""
+    echo -e "${YELLOW}Monitoring Options:${NC}"
+    echo "  --monitor                Open the live monitor only (no attack)"
+    echo "  --monitor-mode MODE      Monitor mode: ping|network|system|full|log (default: full)"
+    echo "  --auto-monitor [MODES]   Auto-open monitor window(s) on attack start (default: on, full)"
+    echo "                           MODES is comma-separated -> one window each, e.g. full,ping,system"
+    echo "  --no-monitor             Do not auto-open any monitor window"
+    echo ""
     echo -e "${YELLOW}Other Options:${NC}"
     echo "  -U, --update             Update hexxFlood to the latest version (git pull)"
     echo "  -V, --version            Show version and exit"
@@ -99,6 +116,13 @@ show_help() {
     echo "  hexxFlood -u http://example.com -m extreme"
     echo "  hexxFlood -u https://example.com -T http -p 100"
     echo "  hexxFlood -u http://example.com:8080 -m high -D 60"
+    echo ""
+    echo -e "${YELLOW}  # Attack + auto-open 3 monitor windows${NC}"
+    echo "  hexxFlood -t 192.168.1.10 -m extreme --auto-monitor full,ping,system"
+    echo ""
+    echo -e "${YELLOW}  # Just watch a target (no attack)${NC}"
+    echo "  hexxFlood --monitor -t 192.168.1.10"
+    echo "  hexxFlood --monitor --monitor-mode ping -t 192.168.1.10"
     echo ""
 }
 
@@ -266,6 +290,106 @@ self_update() {
     exit 0
 }
 
+# ---- External monitor terminal support -----------------------------------
+
+# Work out which X display / auth / dbus to use so GUI terminals can be
+# opened even when hexxFlood is running under sudo (as root).
+resolve_display() {
+    local real_user="${SUDO_USER:-$USER}"
+    MON_HOME=$(getent passwd "$real_user" | cut -d: -f6)
+    MON_HOME="${MON_HOME:-$HOME}"
+    local uid; uid=$(id -u "$real_user" 2>/dev/null)
+
+    # Detect a real X display. Leave MON_DISPLAY empty on headless/SSH boxes
+    # so we cleanly skip monitor windows instead of guessing ":0".
+    if [ -n "$DISPLAY" ]; then
+        MON_DISPLAY="$DISPLAY"
+    else
+        MON_DISPLAY=$(who 2>/dev/null | grep -oE '\(:[0-9]+(\.[0-9]+)?\)' | tr -d '()' | head -1)
+    fi
+    MON_XAUTH="${XAUTHORITY:-$MON_HOME/.Xauthority}"
+    MON_DBUS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/${uid:-0}/bus}"
+}
+
+# Open a single monitor window running monitor.sh in a new terminal.
+# $1 = monitor mode (ping|network|system|full|log). Returns 1 if no
+# terminal emulator is available.
+launch_one_monitor() {
+    local mode="$1"
+    local title="hexxFlood Monitor [$mode] -> $TARGET"
+    local q_script; printf -v q_script '%q' "$MONITOR_SCRIPT"
+    local mon_str="bash $q_script -t $TARGET -i $INTERFACE -m $mode"
+    local -a argv=(bash "$MONITOR_SCRIPT" -t "$TARGET" -i "$INTERFACE" -m "$mode")
+    local -a cmd=()
+    local term
+
+    for term in gnome-terminal konsole qterminal xfce4-terminal kitty alacritty tilix xterm x-terminal-emulator; do
+        command -v "$term" &>/dev/null || continue
+        case "$term" in
+            gnome-terminal)      cmd=(gnome-terminal --title="$title" -- "${argv[@]}") ;;
+            konsole)             cmd=(konsole -p "tabtitle=$title" -e "${argv[@]}") ;;
+            qterminal)           cmd=(qterminal -e "${argv[@]}") ;;
+            xfce4-terminal)      cmd=(xfce4-terminal --title="$title" -e "$mon_str") ;;
+            kitty)               cmd=(kitty --title "$title" "${argv[@]}") ;;
+            alacritty)           cmd=(alacritty -t "$title" -e "${argv[@]}") ;;
+            tilix)               cmd=(tilix -t "$title" -e "$mon_str") ;;
+            xterm)               cmd=(xterm -T "$title" -e "${argv[@]}") ;;
+            x-terminal-emulator) cmd=(x-terminal-emulator -e "${argv[@]}") ;;
+        esac
+        break
+    done
+
+    [ ${#cmd[@]} -eq 0 ] && return 1
+
+    # Launch as the real (non-root) user on their graphical session
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        sudo -u "$SUDO_USER" env HOME="$MON_HOME" DISPLAY="$MON_DISPLAY" \
+            XAUTHORITY="$MON_XAUTH" DBUS_SESSION_BUS_ADDRESS="$MON_DBUS" \
+            "${cmd[@]}" >/dev/null 2>&1 &
+    else
+        DISPLAY="$MON_DISPLAY" XAUTHORITY="$MON_XAUTH" \
+            DBUS_SESSION_BUS_ADDRESS="$MON_DBUS" "${cmd[@]}" >/dev/null 2>&1 &
+    fi
+    return 0
+}
+
+# Auto-open the configured monitor window(s) when an attack starts.
+launch_monitors() {
+    [ "$AUTO_MONITOR" = true ] || return 0
+
+    if [ ! -f "$MONITOR_SCRIPT" ]; then
+        echo -e "${YELLOW}⚠️  monitor.sh not found at $MONITOR_SCRIPT — skipping monitor windows.${NC}"
+        return 0
+    fi
+
+    resolve_display
+    if [ -z "$MON_DISPLAY" ]; then
+        echo -e "${YELLOW}⚠️  No graphical display detected — skipping auto monitor windows.${NC}"
+        echo -e "${YELLOW}   Open one manually in another terminal:  hexxFlood --monitor -t $TARGET${NC}"
+        echo ""
+        return 0
+    fi
+
+    local opened=0 mode
+    for mode in $(echo "$MONITOR_WINDOWS" | tr ',' ' '); do
+        case "$mode" in
+            ping|network|system|full|log) ;;
+            *) echo -e "${YELLOW}⚠️  Unknown monitor mode '$mode' — skipping.${NC}"; continue ;;
+        esac
+        if launch_one_monitor "$mode"; then
+            echo -e "${GREEN}🖥️  Opened monitor window: ${WHITE}$mode${NC}"
+            opened=$((opened + 1))
+            sleep 0.3
+        else
+            echo -e "${YELLOW}⚠️  No supported terminal emulator found — cannot auto-open monitors.${NC}"
+            echo -e "${YELLOW}   Install one of: xterm, gnome-terminal, konsole, xfce4-terminal, qterminal.${NC}"
+            echo -e "${YELLOW}   Or run in another terminal:  hexxFlood --monitor -t $TARGET${NC}"
+            break
+        fi
+    done
+    [ "$opened" -gt 0 ] && echo ""
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -282,6 +406,13 @@ parse_args() {
             -D|--duration) ATTACK_DURATION="$2"; shift 2 ;;
             --no-spoof) SPOOF_IP=false; shift ;;
             --fixed-ports) RANDOM_PORTS=false; shift ;;
+            --monitor) RUN_MONITOR_ONLY=true; shift ;;
+            --monitor-mode) MONITOR_MODE="$2"; shift 2 ;;
+            --auto-monitor)
+                AUTO_MONITOR=true
+                if [[ -n "$2" && "$2" != -* ]]; then MONITOR_WINDOWS="$2"; shift 2; else shift; fi
+                ;;
+            --no-monitor|--no-auto-monitor) AUTO_MONITOR=false; shift ;;
             -U|--update) self_update ;;
             -V|--version) echo -e "${WHITE}hexxFlood v$VERSION${NC}"; exit 0 ;;
             -h|--help) show_help; exit 0 ;;
@@ -410,6 +541,16 @@ main() {
     trap cleanup SIGINT SIGTERM
     show_banner
     parse_args "$@"
+
+    # Standalone monitor: run the monitor and exit (no attack)
+    if [ "$RUN_MONITOR_ONLY" = true ]; then
+        if [ ! -f "$MONITOR_SCRIPT" ]; then
+            echo -e "${RED}❌ monitor.sh not found at $MONITOR_SCRIPT${NC}"; exit 1
+        fi
+        trap - SIGINT SIGTERM
+        exec bash "$MONITOR_SCRIPT" -t "$TARGET" -i "$INTERFACE" -m "$MONITOR_MODE"
+    fi
+
     [ -n "$MODE" ] && set_mode
 
     # Validate numeric inputs against documented ranges
@@ -436,7 +577,10 @@ main() {
     echo ""
     echo -e "${RED}⚠️ WARNING: Use only on networks you OWN or have permission to test!${NC}"
     echo ""
-    
+
+    # Auto-open monitor terminal(s) so progress is visible while the attack runs
+    launch_monitors
+
     if [[ "$ATTACK_TYPES" == *"http"* ]] || [ "$TARGET_TYPE" = "url" ]; then
         echo -e "${GREEN}🌐 Starting HTTP flood on $URL${NC}"
         http_flood "$URL" "$THREADS" "$ATTACK_DURATION"
