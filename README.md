@@ -105,13 +105,23 @@ sudo ./hexxFlood.sh [OPTIONS]
 
 ### Attack Modes
 
-| Mode | Threads | Delay | Attack Types |
-|------|---------|-------|--------------|
-| `easy`    | 10  | `u100` | syn, udp, icmp |
-| `medium`  | 25  | `u10`  | syn, udp, icmp, ack |
-| `high`    | 50  | `u1`   | syn, udp, icmp, ack, rst, fin |
-| `extreme` | 100 | `u1`   | all |
-| `custom`  | —   | —      | your own `-p / -d / -T` values |
+Each mode runs a pool of parallel `hping3 --flood` workers **pinned across your CPU
+cores**. A single `--flood` already saturates one core, so throughput scales with
+**cores, not process count** — the pool is sized to run every core flat-out. (The old
+"hundreds of threads" model actually sent *less*: it thrashed the scheduler and
+overran the NIC TX queue.)
+
+| Mode | Flood workers | Attack Types |
+|------|---------------|--------------|
+| `easy`    | 1× cores | syn, udp, icmp |
+| `medium`  | 2× cores | syn, udp, icmp, ack |
+| `high`    | 3× cores | syn, udp, icmp, ack, rst, fin |
+| `extreme` | **4× cores** | all |
+| `custom`  | 3× cores | your own `-P / -T` values |
+
+> **Full manual control:** set `HEXXFLOOD_WORKERS=N` to force an exact, **uncapped**
+> worker count, e.g. `sudo HEXXFLOOD_WORKERS=64 ./hexxFlood.sh -t 192.168.1.14 -m extreme`.
+> Auto modes cap at 64 workers, the line-rate sweet spot; the override has no cap.
 
 ### Examples
 

