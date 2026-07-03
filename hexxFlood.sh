@@ -517,21 +517,9 @@ monitor_attack() {
         echo -e "${RED}Press Ctrl+C to stop${NC}"
         sleep 2
     done
-    
-    echo -e "${YELLOW}🛑 Stopping all attacks...${NC}"
-    sudo pkill -9 hping3 2>/dev/null
-    sudo pkill -9 -f http_flood.py 2>/dev/null
-    rm -f /tmp/http_flood.py
 
-    local final_packets=$(get_packet_count)
-    local total_sent=$((final_packets - initial_packets))
-    echo ""
-    echo -e "${GREEN}✅ Attack stopped${NC}"
-    echo -e "${YELLOW}📊 Final Statistics:${NC}"
-    echo -e "   Total Packets Sent: ${GREEN}$(printf "%'d" $total_sent)${NC}"
-    echo -e "   Total Time: ${GREEN}${elapsed}s${NC}"
-    [ $elapsed -gt 0 ] && echo -e "   Average PPS: ${GREEN}$(printf "%'d" $((total_sent / elapsed)))${NC}"
-    echo ""
+    # Duration finished: reuse the same clean, structured shutdown as Ctrl+C
+    cleanup
 }
 
 cleanup() {
@@ -539,6 +527,11 @@ cleanup() {
     trap '' SIGINT SIGTERM
     [ "${CLEANUP_DONE:-0}" = 1 ] && exit 0
     CLEANUP_DONE=1
+
+    # A flood child killed with -9 can leave the TTY in raw mode (newlines stop
+    # doing a carriage return -> the "staircase" mess). Restore a sane terminal.
+    stty sane 2>/dev/null
+    printf '\033[?7h\033[?25h\033[0m\r'   # wrap on, cursor on, reset attrs, col 0
 
     # Detach background flood jobs so bash won't print async "Killed" notices
     disown -a 2>/dev/null || true
@@ -556,12 +549,21 @@ cleanup() {
         [ "$elapsed" -gt 0 ] && avg=$(( total / elapsed ))
     fi
 
-    # Clean, structured summary on its own fresh screen
-    clear 2>/dev/null
+    # Rules that adapt to the terminal width so they never wrap on small screens
+    local cols; cols=$(tput cols 2>/dev/null)
+    [[ "$cols" =~ ^[0-9]+$ ]] && [ "$cols" -gt 0 ] || cols=64
+    [ "$cols" -gt 64 ] && cols=64
+    local heavy light
+    heavy=$(printf '━%.0s' $(seq 1 "$cols"))
+    light=$(printf '─%.0s' $(seq 1 "$cols"))
+
+    # Structured summary appended BELOW the existing output (nothing is cleared,
+    # so the full attack view stays visible and the stats land at the very end).
     echo ""
-    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${CYAN}${heavy}${NC}"
     echo -e "   ${YELLOW}🛑  hexxFlood — Attack Stopped${NC}"
-    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}${heavy}${NC}"
     echo ""
     echo -e "   ${GREEN}✔${NC}  hping3 flood processes terminated"
     echo -e "   ${GREEN}✔${NC}  HTTP flood terminated"
@@ -574,9 +576,9 @@ cleanup() {
         echo -e "      Average PPS        : ${GREEN}$(printf "%'d" "$avg")${NC}"
         echo ""
     fi
-    echo -e "${CYAN}────────────────────────────────────────────────────────────────${NC}"
+    echo -e "${CYAN}${light}${NC}"
     echo -e "   ${GREEN}✅ Cleanup complete.${NC}  Stay ethical. 👋"
-    echo -e "${CYAN}────────────────────────────────────────────────────────────────${NC}"
+    echo -e "${CYAN}${light}${NC}"
     echo ""
     exit 0
 }

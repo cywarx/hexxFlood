@@ -39,6 +39,7 @@ screen_init() {
 screen_done() {
     printf "${WRAP}"
     show_cursor
+    stty sane 2>/dev/null   # undo any raw-mode leftovers so newlines behave
 }
 
 # Update EXACTLY ONE row in place: jump to row $1, print $2, clear to line end.
