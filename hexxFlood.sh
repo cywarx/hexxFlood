@@ -61,6 +61,8 @@ show_banner() {
     echo "║                   Ultimate Network Stress Testing Tool v1.0                    ║"
     echo "║                              IP & Web URL Support                              ║"
     echo "║                                Use Responsibly!                                ║"
+    echo "╠════════════════════════════════════════════════════════════════════════════════╣"
+    echo "║                             Author: CyWarX                                     ║"
     echo "╚════════════════════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
