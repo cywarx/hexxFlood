@@ -550,11 +550,18 @@ monitor_attack() {
     local hbanner=""
     [ -s "${HPING_LOG:-/nonexistent}" ] && hbanner=$(head -1 "$HPING_LOG")
 
-    # ---- enter live-dashboard mode: hide cursor, no line-wrap, clean slate ----
+    # ---- enter live-dashboard mode on the ALTERNATE screen buffer (like htop/
+    # less/vim): the frame updates in place with no scrollback gaps, and the
+    # original terminal (banner/config) is restored untouched when we exit. ----
     DASHBOARD_ACTIVE=1
+    local HOME_C='' CLR_BELOW=''
     ( stty sane </dev/tty ) >/dev/null 2>&1 || true
-    tput civis 2>/dev/null
-    printf '\033[?7l\033[2J\033[H'    # nowrap + clear + home
+    if [ -t 1 ]; then
+        printf '\033[?1049h\033[?25l\033[?7l\033[H\033[2J'  # alt screen, hide cursor, nowrap, clear+home
+        HOME_C='\033[H'; CLR_BELOW='\033[J'
+        ALT_SCREEN=1
+        printf '%b\r\n' "${WHITE}☢️  hexxFlood LIVE — collecting first sample…${NC}"
+    fi
 
     # Prime CPU + rate baselines so the first frame shows a real delta.
     cpu_busy_pct >/dev/null
@@ -599,7 +606,9 @@ monitor_attack() {
                 *" -F "*) c_fin=$((c_fin+1)) ;;
             esac
         done < <(pgrep -a hping3 2>/dev/null)
-        local httpc=$(pgrep -cf http_flood.py 2>/dev/null || echo 0)
+        # NOTE: `pgrep -c` already prints 0 (and exits 1) with no match, so a
+        # `|| echo 0` would append a SECOND 0 and inject a stray newline.
+        local httpc; httpc=$(pgrep -cf http_flood.py 2>/dev/null); httpc=${httpc:-0}
 
         local cpu=$(cpu_busy_pct)
         local mem=$(mem_used_str)
@@ -633,7 +642,12 @@ monitor_attack() {
         local div; div=$(printf '─%.0s' $(seq 1 $(( cols>80?80:cols )) ))
         local bar; bar=$(draw_bar "$pps" "$pps_max" "$barw")
 
-        { printf '\033[H'
+        # Pad the command-output panel to a CONSTANT 5 rows so the frame height
+        # never changes between ticks (no jitter, no drift).
+        local shown=( "${evlog[@]}" )
+        while [ ${#shown[@]} -lt 5 ]; do shown+=(""); done
+
+        { printf "$HOME_C"
           pln "${RED}☢️  hexxFlood LIVE  ${NC}${CYAN}$(date +%H:%M:%S)${NC}   ${status}"
           pln "${CYAN}${div}${NC}"
           pln "${YELLOW}🎯 Target :${NC} ${WHITE}${tgt_disp}${NC}"
@@ -647,14 +661,13 @@ monitor_attack() {
           pln "${YELLOW}🖥️  Host   :${NC} cpu ${WHITE}${cpu}%${NC}  mem ${WHITE}${mem}${NC}"
           pln "${CYAN}${div}${NC}"
           pln "${YELLOW}🧨 hping3 :${NC} ${WHITE}${hcount}${NC} procs  →  ${WHITE}syn:${c_syn} udp:${c_udp} icmp:${c_icmp} ack:${c_ack} rst:${c_rst} fin:${c_fin}${NC}   ${YELLOW}http:${NC} ${WHITE}${httpc}${NC}"
-          [ -n "$hbanner" ] && pln "${PURPLE}   ┗ ${hbanner}${NC}"
+          pln "${PURPLE}   ┗ ${hbanner:- (no hping3 sampler)}${NC}"
           pln "${CYAN}${div}${NC}"
           pln "${WHITE}📜 Live command output${NC}"
           local e
-          for e in "${evlog[@]}"; do pln "   ${e}"; done
-          pln ""
+          for e in "${shown[@]}"; do pln "   ${e}"; done
           pln "${RED}Press Ctrl+C to stop${NC}"
-          printf '\033[J'               # clear anything left below the frame
+          printf "$CLR_BELOW"           # clear anything left below the frame
         }
 
         sleep "$REFRESH"
@@ -673,12 +686,13 @@ cleanup() {
     # doing a carriage return -> the "staircase" mess). Restore the REAL terminal
     # (target /dev/tty, not the script's stdin which may be redirected).
     ( stty sane </dev/tty ) >/dev/null 2>&1 || true
+
+    # If the live dashboard used the alternate screen, LEAVE it — this restores
+    # the original terminal (banner/config) exactly as it was, with no blank
+    # gaps, and the final summary then prints cleanly beneath it.
+    [ "${ALT_SCREEN:-0}" = 1 ] && printf '\033[?1049l' 2>/dev/null
     printf '\033[?7h\033[?25h\033[0m\r' 2>/dev/null   # wrap on, cursor on, reset
     tput cnorm 2>/dev/null
-
-    # If the live dashboard was on-screen, wipe it so the final summary prints
-    # on a clean slate instead of on top of the redrawn frame.
-    [ "${DASHBOARD_ACTIVE:-0}" = 1 ] && printf '\033[2J\033[H'
 
     # Detach background flood jobs so bash won't print async "Killed" notices
     disown -a 2>/dev/null || true
