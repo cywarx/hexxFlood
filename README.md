@@ -29,7 +29,7 @@
 - ✅ **Configurable Threads** (1-200)
 - ✅ **Custom Port Selection**
 - ✅ **IP Spoofing**
-- ✅ **Real-time Monitoring**
+- ✅ **Real-time Monitoring** (live in-place value updates — no screen flicker)
 - ✅ **Automatic Cleanup**
 - ✅ **Configuration Persistence**
 - ✅ **System Optimization**
@@ -223,8 +223,20 @@ tmux attach -t demo
 | `-r, --refresh SEC`     | Update interval in seconds (default: `1`, accepts decimals like `0.5`) |
 | `-h, --help`            | Show help |
 
-> Values update **in place** every `--refresh` seconds (no screen flicker). Lower the
-> interval for a more real-time view, e.g. `./monitor.sh -m full -r 0.5` refreshes twice a second.
+> **Real-time, flicker-free display.** The monitor draws its layout (banner, labels, borders)
+> **once**, then updates *only the changing values* in place each cycle — so the numbers tick
+> live like a proper dashboard, with **no screen repaint/refresh**. Lower the interval for a
+> snappier view, e.g. `./monitor.sh -m full -r 0.5` updates twice a second.
+>
+> - 🖥️ **Small-terminal safe** — line-wrapping is disabled and the frame never scrolls, so it
+>   won't fluctuate/jitter on narrow or short windows. In `full` mode the banner is auto-hidden
+>   on short terminals so the stats stay visible.
+> - 🔁 **Resize-aware** — the layout repaints automatically when you resize the terminal.
+> - ↩️ Your shell (cursor + line-wrap) is always restored cleanly on `Ctrl+C`/exit.
+>
+> ⚠️ In `ping`/`full` modes an *unresponsive* target makes each ping wait up to 1s for its own
+> timeout, so updates pace at ~1s there; against a live target the refresh runs at your full
+> `--refresh` rate. `network`/`system` modes always update at the full rate.
 
 ### Monitor modes — what each one *shows the audience*
 
