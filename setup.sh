@@ -42,7 +42,9 @@ echo "╚═══════════════════════�
 echo -e "${NC}"
 
 SOURCE_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-INSTALL_DIR="${HEXXFLOOD_INSTALL_DIR:-/opt/hexxFlood}"
+# Run in place from the current folder by default (keeps it a git checkout so
+# `hexxFlood -U` works natively). Override with HEXXFLOOD_INSTALL_DIR=/opt/... .
+INSTALL_DIR="${HEXXFLOOD_INSTALL_DIR:-$SOURCE_DIR}"
 echo -e "${GREEN}✅${NC} Source directory:  $SOURCE_DIR"
 echo -e "${GREEN}✅${NC} Install directory: $INSTALL_DIR"
 
@@ -71,6 +73,19 @@ USER_SHELL=$(getent passwd "$REAL_USER" | cut -d: -f7)
 SHELL_TYPE=$(basename "${USER_SHELL:-$SHELL}")
 echo -e "${GREEN}✅${NC} Configuring for user: $REAL_USER ($REAL_HOME)"
 echo -e "${GREEN}✅${NC} Detected shell: $SHELL_TYPE"
+
+# Record the git source checkout so `hexxFlood -U` can self-update even when the
+# install dir is a plain copy (e.g. HEXXFLOOD_INSTALL_DIR=/opt/hexxFlood). When
+# install==source this marker is unused but harmless. Check ownership as the
+# real user so git doesn't reject a user-owned checkout.
+if sudo -u "$REAL_USER" git -C "$SOURCE_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
+    echo "$SOURCE_DIR" > "$INSTALL_DIR/.source_dir"
+    chown "$REAL_USER": "$INSTALL_DIR/.source_dir" 2>/dev/null || true
+    echo -e "${GREEN}✅${NC} Recorded update source: $SOURCE_DIR"
+else
+    rm -f "$INSTALL_DIR/.source_dir" 2>/dev/null
+    echo -e "${YELLOW}⚠️${NC} Source is not a git checkout — 'hexxFlood -U' will be unavailable"
+fi
 
 echo -e "${GREEN}✅${NC} Updating package list..."
 apt update -y 2>/dev/null || echo -e "${YELLOW}⚠️${NC} Update failed, continuing..."

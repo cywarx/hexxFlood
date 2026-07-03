@@ -1,4 +1,5 @@
 .hexxFlood_config
+.source_dir
 *.log
 logs/
 __pycache__/

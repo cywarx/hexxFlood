@@ -234,6 +234,29 @@ PYEOF
     fi
 }
 
+# True if $1 is inside a git work tree. Runs the check as the invoking user
+# when we're root (via sudo) so git doesn't reject a user-owned checkout with
+# a "dubious ownership" error.
+git_is_repo() {
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        sudo -u "$SUDO_USER" git -C "$1" rev-parse --is-inside-work-tree &>/dev/null
+    else
+        git -C "$1" rev-parse --is-inside-work-tree &>/dev/null
+    fi
+}
+
+# Copy the refreshed runtime files from a source checkout ($1) into the install
+# dir ($2). Used after pulling, since the install dir is a plain copy.
+deploy_runtime() {
+    local src="$1" dst="$2" f
+    [ "$src" -ef "$dst" ] && return 0
+    for f in hexxFlood.sh monitor.sh quick.sh README.md LICENSE; do
+        [ -f "$src/$f" ] && cp -f "$src/$f" "$dst/$f"
+    done
+    chmod +x "$dst"/*.sh 2>/dev/null
+    echo -e "${GREEN}✅ Redeployed updated files to $dst${NC}"
+}
+
 self_update() {
     # Resolve the real script location even when invoked via the wrapper/symlink
     local script_dir
@@ -246,17 +269,30 @@ self_update() {
         exit 1
     fi
 
-    if ! git -C "$script_dir" rev-parse --is-inside-work-tree &>/dev/null; then
-        echo -e "${RED}❌ $script_dir is not a git repository — cannot auto-update.${NC}"
-        echo -e "${YELLOW}   Re-clone it to enable updates:${NC}"
-        echo -e "   git clone $REPO_URL"
-        exit 1
+    # The install dir (e.g. /opt/hexxFlood) is a plain copy, not a git checkout,
+    # so we update in the original source checkout recorded at install time and
+    # then redeploy the refreshed files into the install dir.
+    local repo_dir="$script_dir"
+    local deploy=false
+    if ! git_is_repo "$repo_dir"; then
+        local src=""
+        [ -f "$script_dir/.source_dir" ] && src="$(cat "$script_dir/.source_dir" 2>/dev/null)"
+        if [ -n "$src" ] && git_is_repo "$src"; then
+            repo_dir="$src"
+            deploy=true
+            echo -e "${CYAN}   Install dir is a copy — updating source checkout: $repo_dir${NC}"
+        else
+            echo -e "${RED}❌ $script_dir is not a git repository and no source checkout was found.${NC}"
+            echo -e "${YELLOW}   Re-run the installer from a git clone to enable updates:${NC}"
+            echo -e "   git clone $REPO_URL && cd hexxFlood && sudo ./setup.sh"
+            exit 1
+        fi
     fi
 
     # Run git as the invoking user (not root) so repo files keep the right owner
-    local git_cmd=(git -C "$script_dir")
+    local git_cmd=(git -C "$repo_dir")
     if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-        git_cmd=(sudo -u "$SUDO_USER" git -C "$script_dir")
+        git_cmd=(sudo -u "$SUDO_USER" git -C "$repo_dir")
     fi
 
     local branch
@@ -274,19 +310,22 @@ self_update() {
 
     if [ "$local_rev" = "$remote_rev" ]; then
         echo -e "${GREEN}✅ Already up to date (v$VERSION, $("${git_cmd[@]}" rev-parse --short HEAD)).${NC}"
+        # Still sync the install dir in case it drifted from the source checkout
+        [ "$deploy" = true ] && deploy_runtime "$repo_dir" "$script_dir"
         exit 0
     fi
 
     echo -e "${YELLOW}⬆️  Update available: $("${git_cmd[@]}" rev-parse --short HEAD) → $("${git_cmd[@]}" rev-parse --short origin/$branch)${NC}"
     if "${git_cmd[@]}" pull --ff-only origin "$branch"; then
-        chmod +x "$script_dir"/*.sh 2>/dev/null
+        chmod +x "$repo_dir"/*.sh 2>/dev/null
+        [ "$deploy" = true ] && deploy_runtime "$repo_dir" "$script_dir"
         echo -e "${GREEN}✅ hexxFlood updated to the latest version!${NC}"
         echo -e "${CYAN}Recent changes:${NC}"
         "${git_cmd[@]}" log --oneline -5
     else
         echo -e "${RED}❌ Update failed — you likely have local changes that conflict.${NC}"
-        echo -e "${YELLOW}   Inspect with: git -C $script_dir status${NC}"
-        echo -e "${YELLOW}   Discard local changes with: git -C $script_dir reset --hard origin/$branch${NC}"
+        echo -e "${YELLOW}   Inspect with: git -C $repo_dir status${NC}"
+        echo -e "${YELLOW}   Discard local changes with: git -C $repo_dir reset --hard origin/$branch${NC}"
         exit 1
     fi
     exit 0
