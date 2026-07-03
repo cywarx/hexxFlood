@@ -41,8 +41,27 @@ echo "║                             Author: CyWarX                            
 echo "╚════════════════════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
-SCRIPT_DIR="$(pwd)"
-echo -e "${GREEN}✅${NC} Installation directory: $SCRIPT_DIR"
+SOURCE_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+INSTALL_DIR="${HEXXFLOOD_INSTALL_DIR:-/opt/hexxFlood}"
+echo -e "${GREEN}✅${NC} Source directory:  $SOURCE_DIR"
+echo -e "${GREEN}✅${NC} Install directory: $INSTALL_DIR"
+
+# Deploy (copy) the latest runtime files into the install directory so the
+# installed tool always matches the current source checkout.
+if [ "$SOURCE_DIR" -ef "$INSTALL_DIR" ]; then
+    echo -e "${YELLOW}⚠️${NC} Running from the install directory — copy step skipped"
+else
+    mkdir -p "$INSTALL_DIR"
+    for f in hexxFlood.sh monitor.sh quick.sh README.md LICENSE; do
+        if [ -f "$SOURCE_DIR/$f" ]; then
+            cp -f "$SOURCE_DIR/$f" "$INSTALL_DIR/$f"
+            echo -e "${GREEN}✅${NC} Copied $f"
+        fi
+    done
+fi
+
+# Everything below installs/points at the deployed copy
+SCRIPT_DIR="$INSTALL_DIR"
 
 # Resolve the real (non-root) user even when run via sudo
 REAL_USER="${SUDO_USER:-$USER}"
@@ -87,8 +106,8 @@ if [ -d "/opt/hexxFlood-venv" ]; then
     echo -e "${GREEN}✅${NC} Virtual environment configured at /opt/hexxFlood-venv"
 fi
 
-chmod +x "$SCRIPT_DIR/hexxFlood.sh"
-echo -e "${GREEN}✅${NC} Made hexxFlood.sh executable"
+chmod +x "$SCRIPT_DIR"/*.sh 2>/dev/null
+echo -e "${GREEN}✅${NC} Made hexxFlood.sh / monitor.sh / quick.sh executable"
 
 sudo rm -f /usr/local/bin/hexxFlood
 sudo rm -f /usr/bin/hexxFlood
@@ -205,7 +224,8 @@ echo "  hexxFlood -u https://example.com -T http -p 100"
 echo "  hexxFlood -u http://example.com:8080 -m high -D 60"
 echo ""
 echo -e "${CYAN}📁 Installation Details:${NC}"
-echo "  Source Dir:  $SCRIPT_DIR"
+echo "  Source Dir:  $SOURCE_DIR"
+echo "  Install Dir: $INSTALL_DIR"
 echo "  Wrapper:     /usr/local/bin/hexxFlood"
 echo "  Config:      ~/.hexxFlood_config"
 echo "  Shell RC:    $RC_FILE"
