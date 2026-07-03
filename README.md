@@ -1,6 +1,6 @@
 # 💀 hexxFlood - Ultimate Network Stress Testing Tool
 
-[![Version](https://img.shields.io/badge/version-3.3-red.svg)](https://github.com/Cywarx/hexxFlood)
+[![Version](https://img.shields.io/badge/version-1.0-red.svg)](https://github.com/Cywarx/hexxFlood)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Kali](https://img.shields.io/badge/Kali-Linux-blue.svg)](https://www.kali.org/)
 [![Bash](https://img.shields.io/badge/Bash-4.0+-green.svg)](https://www.gnu.org/software/bash/)
@@ -34,7 +34,7 @@
 - ✅ **Configuration Persistence**
 - ✅ **System Optimization**
 
-### New Features (v3.3)
+### Web & HTTP Features
 - 🌐 **Web URL Support** (HTTP/HTTPS)
 - 🔥 **HTTP Flood Attack**
 - 🔄 **User-Agent Rotation**
@@ -63,6 +63,18 @@ sudo ./setup.sh
 hexxFlood -h
 ```
 
+### Updating
+
+Pull the latest version straight from the tool — no need to re-clone:
+
+```bash
+hexxFlood --update        # or: hexxFlood -U
+./quick.sh update         # same thing via the quick launcher
+```
+
+This runs a fast-forward `git pull` in the install directory and re-applies the
+executable bit. If you have local edits that conflict, it tells you how to reset.
+
 ---
 
 ## 🎮 Usage
@@ -87,6 +99,8 @@ sudo ./hexxFlood.sh [OPTIONS]
 | `-D, --duration SEC`    | Duration in seconds (0 = infinite) |
 | `--no-spoof`            | Disable source-IP spoofing (drops `--rand-source`) |
 | `--fixed-ports`         | Use a static dst port instead of an incrementing one |
+| `-U, --update`          | Update hexxFlood to the latest version (`git pull`) |
+| `-V, --version`         | Show version and exit |
 | `-h, --help`            | Show help |
 
 ### Attack Modes

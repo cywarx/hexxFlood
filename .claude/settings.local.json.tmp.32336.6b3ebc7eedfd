@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(command -v shellcheck)",
+      "Bash(shellcheck -S warning hexxFlood.sh quick.sh setup.sh)",
+      "Bash(bash -n monitor.sh)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(chmod +x hexxFlood.sh monitor.sh quick.sh setup.sh)",
+      "Bash(git commit -q -m 'Set executable bit on shell scripts so clones are runnable *)",
+      "Bash(python3 *)",
+      "Bash(bash)",
+      "Bash(git commit -q -m 'Replace leftover DOOMSAY banner with HEXXFLOOD ASCII art *)",
+      "Bash(grep -n 'case\\\\|status\\)\\\\|stop\\)\\\\|SCRIPT_DIR\\\\|hexxFlood.sh\\\\|\\)\\\\s*$\\\\|;;\\\\|esac\\\\|Usage\\\\|echo \"  ' quick.sh)",
+      "Bash(bash hexxFlood.sh --version)",
+      "Bash(bash hexxFlood.sh --update)",
+      "Bash(bash quick.sh help)",
+      "Bash(git commit -q -m 'Correct version to 1.0 and add self-update option *)"
+    ]
+  }
+}

@@ -25,7 +25,7 @@ show_banner() {
     echo "║   ██║  ██║███████╗██╔╝ ██╗██╔╝ ██╗██║     ███████╗╚██████╔╝╚██████╔╝██████╔╝   ║"
     echo "║   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝    ║"
     echo "║                                                                                ║"
-    echo "║                              Quick Launcher v3.3                               ║"
+    echo "║                              Quick Launcher v1.0                               ║"
     echo "║                                Use Responsibly!                                ║"
     echo "╚════════════════════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -50,6 +50,7 @@ show_help() {
     echo "  custom IP          - Custom attack with prompts"
     echo "  stop               - Stop all attacks"
     echo "  status             - Check attack status"
+    echo "  update             - Update hexxFlood to the latest version"
     echo "  help               - Show this help"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
@@ -59,6 +60,13 @@ show_help() {
     echo "  ./quick.sh lab 10.0.0.5"
     echo "  ./quick.sh stop"
     echo ""
+}
+
+# Update to the latest version (delegates to the main tool)
+run_update() {
+    local script_dir
+    script_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+    bash "$script_dir/hexxFlood.sh" --update
 }
 
 # Attack functions
@@ -235,6 +243,9 @@ main() {
             ;;
         status)
             attack_status
+            ;;
+        update)
+            run_update
             ;;
         help|--help|-h)
             show_help

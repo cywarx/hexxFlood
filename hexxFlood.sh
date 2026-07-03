@@ -16,6 +16,10 @@ CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
+# Version
+VERSION="1.0"
+REPO_URL="https://github.com/Cywarx/hexxFlood.git"
+
 # Configuration
 CONFIG_FILE="$HOME/.hexxFlood_config"
 TARGET="192.168.1.14"
@@ -44,7 +48,7 @@ show_banner() {
     echo "║   ██║  ██║███████╗██╔╝ ██╗██╔╝ ██╗██║     ███████╗╚██████╔╝╚██████╔╝██████╔╝   ║"
     echo "║   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝    ║"
     echo "║                                                                                ║"
-    echo "║                   Ultimate Network Stress Testing Tool v3.3                    ║"
+    echo "║                   Ultimate Network Stress Testing Tool v1.0                    ║"
     echo "║                              IP & Web URL Support                              ║"
     echo "║                                Use Responsibly!                                ║"
     echo "╚════════════════════════════════════════════════════════════════════════════════╝"
@@ -74,6 +78,10 @@ show_help() {
     echo "  -D, --duration SEC       Duration in seconds (0=infinite)"
     echo "  --no-spoof               Disable IP spoofing"
     echo "  --fixed-ports            Use fixed ports"
+    echo ""
+    echo -e "${YELLOW}Other Options:${NC}"
+    echo "  -U, --update             Update hexxFlood to the latest version (git pull)"
+    echo "  -V, --version            Show version and exit"
     echo "  -h, --help               Show this help"
     echo ""
     echo -e "${YELLOW}Attack Modes:${NC}"
@@ -200,6 +208,64 @@ PYEOF
     fi
 }
 
+self_update() {
+    # Resolve the real script location even when invoked via the wrapper/symlink
+    local script_dir
+    script_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+    echo -e "${CYAN}🔄 Checking for updates in $script_dir ...${NC}"
+
+    if ! command -v git &>/dev/null; then
+        echo -e "${RED}❌ git is not installed. Install it with: sudo apt install git${NC}"
+        exit 1
+    fi
+
+    if ! git -C "$script_dir" rev-parse --is-inside-work-tree &>/dev/null; then
+        echo -e "${RED}❌ $script_dir is not a git repository — cannot auto-update.${NC}"
+        echo -e "${YELLOW}   Re-clone it to enable updates:${NC}"
+        echo -e "   git clone $REPO_URL"
+        exit 1
+    fi
+
+    # Run git as the invoking user (not root) so repo files keep the right owner
+    local git_cmd=(git -C "$script_dir")
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        git_cmd=(sudo -u "$SUDO_USER" git -C "$script_dir")
+    fi
+
+    local branch
+    branch="$("${git_cmd[@]}" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    [ -z "$branch" ] || [ "$branch" = "HEAD" ] && branch="main"
+
+    if ! "${git_cmd[@]}" fetch --quiet origin "$branch" 2>/dev/null; then
+        echo -e "${RED}❌ Could not reach the remote. Check your internet connection.${NC}"
+        exit 1
+    fi
+
+    local local_rev remote_rev
+    local_rev="$("${git_cmd[@]}" rev-parse HEAD)"
+    remote_rev="$("${git_cmd[@]}" rev-parse "origin/$branch" 2>/dev/null)"
+
+    if [ "$local_rev" = "$remote_rev" ]; then
+        echo -e "${GREEN}✅ Already up to date (v$VERSION, $("${git_cmd[@]}" rev-parse --short HEAD)).${NC}"
+        exit 0
+    fi
+
+    echo -e "${YELLOW}⬆️  Update available: $("${git_cmd[@]}" rev-parse --short HEAD) → $("${git_cmd[@]}" rev-parse --short origin/$branch)${NC}"
+    if "${git_cmd[@]}" pull --ff-only origin "$branch"; then
+        chmod +x "$script_dir"/*.sh 2>/dev/null
+        echo -e "${GREEN}✅ hexxFlood updated to the latest version!${NC}"
+        echo -e "${CYAN}Recent changes:${NC}"
+        "${git_cmd[@]}" log --oneline -5
+    else
+        echo -e "${RED}❌ Update failed — you likely have local changes that conflict.${NC}"
+        echo -e "${YELLOW}   Inspect with: git -C $script_dir status${NC}"
+        echo -e "${YELLOW}   Discard local changes with: git -C $script_dir reset --hard origin/$branch${NC}"
+        exit 1
+    fi
+    exit 0
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -216,6 +282,8 @@ parse_args() {
             -D|--duration) ATTACK_DURATION="$2"; shift 2 ;;
             --no-spoof) SPOOF_IP=false; shift ;;
             --fixed-ports) RANDOM_PORTS=false; shift ;;
+            -U|--update) self_update ;;
+            -V|--version) echo -e "${WHITE}hexxFlood v$VERSION${NC}"; exit 0 ;;
             -h|--help) show_help; exit 0 ;;
             *) echo -e "${RED}Unknown option: $1${NC}"; show_help; exit 1 ;;
         esac
