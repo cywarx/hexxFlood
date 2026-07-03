@@ -220,14 +220,18 @@ tmux attach -t demo
 | `-t, --target IP`       | Target IP to monitor (default: `192.168.1.14`) |
 | `-i, --interface IFACE` | Network interface (default: `wlan0`) |
 | `-m, --mode MODE`       | `ping` \| `network` \| `system` \| `full` \| `log` |
+| `-r, --refresh SEC`     | Update interval in seconds (default: `1`, accepts decimals like `0.5`) |
 | `-h, --help`            | Show help |
+
+> Values update **in place** every `--refresh` seconds (no screen flicker). Lower the
+> interval for a more real-time view, e.g. `./monitor.sh -m full -r 0.5` refreshes twice a second.
 
 ### Monitor modes — what each one *shows the audience*
 
 | Mode | What it demonstrates | Command |
 |------|----------------------|---------|
 | **`ping`**    | Target latency spiking / **going unresponsive** — the clearest "it's down" signal | `./monitor.sh -t 192.168.1.14 -m ping` |
-| **`network`** | TX/RX packet counters climbing, active connections, live `hping3` process count | `./monitor.sh -i wlan0 -m network` |
+| **`network`** | **Live RX/TX throughput (B/s→KB/s→MB/s)** plus TX/RX packet counters, active connections, live `hping3` process count | `./monitor.sh -i wlan0 -m network` |
 | **`system`**  | CPU/RAM/load spiking + top attack processes on the *attacker* box | `./monitor.sh -m system` |
 | **`full`**    | **All of the above on one dashboard** — the go-to view for the live demo | `./monitor.sh -t 192.168.1.14 -i wlan0 -m full` |
 | **`log`**     | Timestamps everything to `hexxFlood_monitor_<date>.log` for post-demo evidence | `./monitor.sh -t 192.168.1.14 -m log` |
@@ -245,7 +249,7 @@ tmux attach -t demo
    ```
 3. **Watch the impact** on the monitor pane:
    - Ping latency climbs, then flips to **`💀 TARGET UNRESPONSIVE!`**
-   - `TX packets` / `RX packets` counters race upward
+   - **`RX Rate` / `TX Rate`** shoot up in real time (KB/s → MB/s), and `TX packets` / `RX packets` counters race upward
    - `hping3 Processes` and `Active Connections` jump
    - Attacker CPU / Load Average spike
 4. **Stop the attack** — either wait for `-D` duration to elapse, or `Ctrl+C` the attacker pane.
