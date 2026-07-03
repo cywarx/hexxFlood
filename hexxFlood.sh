@@ -444,7 +444,11 @@ monitor_attack() {
     local start_time=$(date +%s)
     local duration=$ATTACK_DURATION
     local initial_packets=$(get_packet_count)
-    
+
+    # Expose to cleanup() so Ctrl+C can print a proper final summary
+    ATTACK_START_TIME=$start_time
+    ATTACK_INITIAL_PACKETS=$initial_packets
+
     while true; do
         if [ $duration -gt 0 ]; then
             local current_time=$(date +%s)
@@ -531,11 +535,49 @@ monitor_attack() {
 }
 
 cleanup() {
-    echo -e "\n${YELLOW}🛑 Stopping all attacks...${NC}"
-    sudo pkill -9 hping3 2>/dev/null
-    sudo pkill -9 -f http_flood.py 2>/dev/null
-    rm -f /tmp/http_flood.py
-    echo -e "${GREEN}✅ Cleanup complete${NC}"
+    # Ignore further Ctrl+C while tidying up, and never run the body twice
+    trap '' SIGINT SIGTERM
+    [ "${CLEANUP_DONE:-0}" = 1 ] && exit 0
+    CLEANUP_DONE=1
+
+    # Detach background flood jobs so bash won't print async "Killed" notices
+    disown -a 2>/dev/null || true
+
+    # Stop everything quietly (hide job-control + kill output)
+    { sudo pkill -9 hping3; sudo pkill -9 -f http_flood.py; } >/dev/null 2>&1
+    rm -f /tmp/http_flood.py 2>/dev/null
+    wait 2>/dev/null
+
+    # Final stats (if the attack actually started)
+    local elapsed=0 total=0 avg=0
+    if [ -n "${ATTACK_START_TIME:-}" ]; then
+        elapsed=$(( $(date +%s) - ATTACK_START_TIME ))
+        total=$(( $(get_packet_count) - ${ATTACK_INITIAL_PACKETS:-0} ))
+        [ "$elapsed" -gt 0 ] && avg=$(( total / elapsed ))
+    fi
+
+    # Clean, structured summary on its own fresh screen
+    clear 2>/dev/null
+    echo ""
+    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    echo -e "   ${YELLOW}🛑  hexxFlood — Attack Stopped${NC}"
+    echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "   ${GREEN}✔${NC}  hping3 flood processes terminated"
+    echo -e "   ${GREEN}✔${NC}  HTTP flood terminated"
+    echo -e "   ${GREEN}✔${NC}  Temporary files removed"
+    echo ""
+    if [ -n "${ATTACK_START_TIME:-}" ]; then
+        echo -e "   ${YELLOW}📊 Final Statistics${NC}"
+        echo -e "      Total Packets Sent : ${GREEN}$(printf "%'d" "$total")${NC}"
+        echo -e "      Total Time         : ${GREEN}${elapsed}s${NC}"
+        echo -e "      Average PPS        : ${GREEN}$(printf "%'d" "$avg")${NC}"
+        echo ""
+    fi
+    echo -e "${CYAN}────────────────────────────────────────────────────────────────${NC}"
+    echo -e "   ${GREEN}✅ Cleanup complete.${NC}  Stay ethical. 👋"
+    echo -e "${CYAN}────────────────────────────────────────────────────────────────${NC}"
+    echo ""
     exit 0
 }
 
@@ -627,7 +669,11 @@ main() {
             done
         done
     fi
-    
+
+    # Detach the background flood jobs from job control so bash doesn't print
+    # async "Killed"/"Terminated" notices over our output when cleanup kills them.
+    disown -a 2>/dev/null || true
+
     monitor_attack
 }
 
