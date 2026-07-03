@@ -105,23 +105,30 @@ sudo ./hexxFlood.sh [OPTIONS]
 
 ### Attack Modes
 
-Each mode runs a pool of parallel `hping3 --flood` workers **pinned across your CPU
-cores**. A single `--flood` already saturates one core, so throughput scales with
-**cores, not process count** — the pool is sized to run every core flat-out. (The old
-"hundreds of threads" model actually sent *less*: it thrashed the scheduler and
-overran the NIC TX queue.)
+Each mode runs a pool of parallel `hping3 --flood` workers sized to your CPU cores.
+The pool is round-robined across the selected attack types.
 
 | Mode | Flood workers | Attack Types |
 |------|---------------|--------------|
-| `easy`    | 1× cores | syn, udp, icmp |
-| `medium`  | 2× cores | syn, udp, icmp, ack |
-| `high`    | 3× cores | syn, udp, icmp, ack, rst, fin |
-| `extreme` | **4× cores** | all |
-| `custom`  | 3× cores | your own `-P / -T` values |
+| `easy`    | 2× cores  | syn, udp, icmp |
+| `medium`  | 4× cores  | syn, udp, icmp, ack |
+| `high`    | 8× cores  | syn, udp, icmp, ack, rst, fin |
+| `extreme` | **16× cores** | all |
+| `custom`  | 8× cores  | your own `-P / -T` values |
 
 > **Full manual control:** set `HEXXFLOOD_WORKERS=N` to force an exact, **uncapped**
-> worker count, e.g. `sudo HEXXFLOOD_WORKERS=64 ./hexxFlood.sh -t 192.168.1.14 -m extreme`.
-> Auto modes cap at 64 workers, the line-rate sweet spot; the override has no cap.
+> worker count, e.g. `sudo HEXXFLOOD_WORKERS=600 ./hexxFlood.sh -t 192.168.1.14 -m extreme`.
+> Auto modes cap at 256 workers; the override has no cap.
+
+> **Maximising impact (read this):**
+> - **Packet size is the biggest lever.** The default `-s 65495` maxes *bandwidth* but
+>   sends few packets/sec — over Wi-Fi that's very slow. For **maximum packets/sec** (which
+>   overwhelms a host's CPU/interrupts and causes latency + loss), use a small size:
+>   `sudo ./hexxFlood.sh -t <ip> -m extreme -s 120`.
+> - **Use ethernet, not Wi-Fi.** Wireless NICs are poor at high-rate raw/spoofed injection
+>   regardless of settings; ethernet raises real throughput by orders of magnitude.
+> - **Measure impact from a *third* device**, not the attacker — a `ping` on the attacking
+>   host reads high mostly because its own CPU is busy, not because the target is worse off.
 
 ### Examples
 
