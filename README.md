@@ -15,7 +15,7 @@
 - ⚖️ The author takes **NO responsibility** for misuse
 - 🛡️ Use responsibly and ethically
 
-> **NULLCON DEMO NOTE:** For the live demonstration, run this **only** against your own
+> **DEMO NOTE:** For the live demonstration, run this **only** against your own
 > lab/target machine on an **isolated network you control** (e.g. an air-gapped switch or
 > a dedicated demo VLAN). Never point it at conference/venue infrastructure or any shared network.
 
@@ -151,7 +151,7 @@ Preset one-liners for common scenarios:
 ## 📊 Monitoring the Attack (Live Demo)
 
 The repo ships a dedicated **`monitor.sh`** script so you can *demonstrate the impact* of the
-attack in real time — perfect for a side-by-side split screen during the NULLCON talk:
+attack in real time — perfect for a side-by-side split screen during the talk:
 **left pane = attack (`hexxFlood.sh`), right pane = monitor (`monitor.sh`).**
 
 ### Zero-effort monitoring — built into `hexxFlood`
