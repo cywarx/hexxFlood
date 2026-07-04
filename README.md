@@ -190,15 +190,21 @@ The pool is round-robined across the selected attack types. **Throughput scales 
 cores, not process count** — one `--flood` worker already saturates a core, so the pool is
 sized in multiples of `nproc` rather than spawning hundreds of thrashing processes.
 
-| Mode | Flood workers | Attack Types | System tuning | Auto-stop |
-|------|---------------|--------------|---------------|-----------|
-| `low`        | 2× cores  | syn, udp, icmp | off | ∞ |
-| `medium`     | 4× cores  | syn, udp, icmp, ack | off | ∞ |
-| `high`       | 8× cores  | syn, udp, icmp, ack, rst, fin | on | ∞ |
-| `extreme`    | **16× cores** | all + http2/ws/graphql | on | **60s** |
-| `apocalypse` | **32× cores** | all + full Layer-7 | on | **60s** |
-| `god`        | **64× cores** | everything + kernel limits | on | **60s** |
-| `custom`     | 8× cores  | your own `-P / -T` values | auto | ∞ |
+Two numbers scale per mode: **flood workers** = parallel `hping3` processes
+(scale with CPU cores), and **threads** = HTTP/Layer-7 concurrency (the `-p`
+value). A mode sets both; `custom` keeps your `-p`/config value instead.
+
+| Mode | Flood workers | Threads (`-p`) | Attack Types | Tuning | Auto-stop |
+|------|---------------|----------------|--------------|--------|-----------|
+| `low`        | 2× cores  | 10   | syn, udp, icmp | off | ∞ |
+| `medium`     | 4× cores  | 25   | syn, udp, icmp, ack | off | ∞ |
+| `high`       | 8× cores  | 50   | syn, udp, icmp, ack, rst, fin | on | ∞ |
+| `extreme`    | **16× cores** | 100  | all + http2/ws/graphql | on | **60s** |
+| `apocalypse` | **32× cores** | 500  | all + full Layer-7 | on | **60s** |
+| `god`        | **64× cores** | 1000 | everything + kernel limits | on | **60s** |
+| `custom`     | 8× cores  | 50*  | your own `-P / -T` values | auto | ∞ |
+
+<sub>*`custom` uses your `-p` value (or the config default 50); every other mode forces its own thread count.</sub>
 
 > **Wi-Fi auto-cap (default) — with a full-power escape hatch.** On a **Wi-Fi** interface the
 > auto worker count is capped to **~4× cores** by default. A wireless link is shared and
