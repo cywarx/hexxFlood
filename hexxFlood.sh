@@ -2,7 +2,7 @@
 
 # ============================================================
 # hexxFlood - ULTIMATE DDOS WEAPON SYSTEM
-# Version: 4.0 - GOD MODE (FULLY VERIFIED - ALL OPTIONS FIXED)
+# Version: defined once in lib/config.sh ($VERSION) — do not hardcode here
 # Author: Cywarx
 #
 # This is the thin entrypoint. The engine lives in lib/:
@@ -210,7 +210,7 @@ show_banner() {
     echo "║   ██║  ██║███████╗██╔╝ ██╗██╔╝ ██╗██║     ███████╗╚██████╔╝╚██████╔╝██████╔╝          ║"
     echo "║   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝           ║"
     echo "║                                                                                       ║"
-    echo "║                ☢️  ULTIMATE DDOS WEAPON SYSTEM v4.0  ☢️                              ║"
+    echo "║                ☢️  ULTIMATE DDOS WEAPON SYSTEM v${VERSION}  ☢️                              ║"
     echo "║                     FULLY VERIFIED - ALL OPTIONS FIXED                                 ║"
     echo "╠═══════════════════════════════════════════════════════════════════════════════════════╣"
     echo "║  📡 Protocols: HTTP/1.1 HTTP/2 HTTP/3 WebSockets SSE GraphQL gRPC WebRTC             ║"
