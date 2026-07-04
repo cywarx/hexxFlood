@@ -21,7 +21,7 @@ NC='\033[0m'
 
 # Version — the ONE place the version number lives. The banner, -h and -V all
 # derive from $VERSION, so changing it here updates it everywhere.
-VERSION="3.0"
+VERSION="1.0"
 REPO_URL="https://github.com/Cywarx/hexxFlood.git"
 
 # ============================================================

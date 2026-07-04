@@ -1,6 +1,6 @@
 # 💀 hexxFlood - Ultimate Network Stress Testing Tool
 
-[![Version](https://img.shields.io/badge/version-3.0-red.svg)](https://github.com/Cywarx/hexxFlood)
+[![Version](https://img.shields.io/badge/version-1.0-red.svg)](https://github.com/Cywarx/hexxFlood)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Kali](https://img.shields.io/badge/Kali-Linux-blue.svg)](https://www.kali.org/)
 [![Bash](https://img.shields.io/badge/Bash-4.0+-green.svg)](https://www.gnu.org/software/bash/)
