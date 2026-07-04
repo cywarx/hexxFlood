@@ -60,6 +60,13 @@ else
             echo -e "${GREEN}✅${NC} Copied $f"
         fi
     done
+    # hexxFlood.sh is now a thin entrypoint that sources lib/*.sh — the whole
+    # lib/ directory must be deployed alongside it or the tool won't start.
+    if [ -d "$SOURCE_DIR/lib" ]; then
+        mkdir -p "$INSTALL_DIR/lib"
+        cp -f "$SOURCE_DIR"/lib/*.sh "$INSTALL_DIR/lib/"
+        echo -e "${GREEN}✅${NC} Copied lib/ ($(ls -1 "$SOURCE_DIR"/lib/*.sh | wc -l | tr -d ' ') modules)"
+    fi
 fi
 
 # Everything below installs/points at the deployed copy
@@ -102,27 +109,48 @@ else
 fi
 
 echo -e "${GREEN}✅${NC} Installing Python packages..."
-apt install -y python3-scapy python3-colorama python3-pip 2>/dev/null || {
+# System packages (best-effort). The venv below is what hexxFlood actually
+# runs its Python floods with, so the real dependency install happens there.
+apt install -y python3-scapy python3-colorama python3-requests python3-pip 2>/dev/null || {
     echo -e "${YELLOW}⚠️${NC} Some Python packages may already be installed"
 }
 
 echo -e "${GREEN}✅${NC} Setting up Python virtual environment..."
+# --system-site-packages lets the venv fall back to apt-installed modules if a
+# pip install is blocked (offline / PEP-668), so the floods still find their libs.
 if [ ! -d "/opt/hexxFlood-venv" ]; then
-    python3 -m venv /opt/hexxFlood-venv 2>/dev/null || {
+    python3 -m venv --system-site-packages /opt/hexxFlood-venv 2>/dev/null \
+        || python3 -m venv /opt/hexxFlood-venv 2>/dev/null || {
         echo -e "${YELLOW}⚠️${NC} Virtual environment creation failed - using system Python"
     }
 fi
 
+# hexxFlood's Python floods import these:
+#   requests          -> GraphQL flood       (lib/attacks.sh: graphql_flood.py)
+#   h2                -> HTTP/2 flood         (lib/attacks.sh: http2_flood.py)
+#   websocket-client  -> WebSocket flood      (lib/attacks.sh: websocket_flood.py)
+#   scapy / colorama  -> packet crafting / colour
+# The venv is the interpreter the tool prefers, so ALL of them must live here or
+# --http2 / --websocket / --graphql print "requires X library" and do nothing.
+HEXX_PYDEPS="scapy colorama requests h2 websocket-client"
 if [ -d "/opt/hexxFlood-venv" ]; then
     source /opt/hexxFlood-venv/bin/activate 2>/dev/null
     pip install --upgrade pip 2>/dev/null
-    pip install scapy colorama 2>/dev/null
+    if pip install $HEXX_PYDEPS 2>/dev/null; then
+        echo -e "${GREEN}✅${NC} Installed Python deps into venv: $HEXX_PYDEPS"
+    else
+        echo -e "${YELLOW}⚠️${NC} pip install partial — floods fall back to system Python if needed"
+    fi
     deactivate 2>/dev/null
     echo -e "${GREEN}✅${NC} Virtual environment configured at /opt/hexxFlood-venv"
+else
+    # No venv — make sure the deps at least exist for the system interpreter.
+    pip3 install --break-system-packages $HEXX_PYDEPS 2>/dev/null \
+        || pip3 install $HEXX_PYDEPS 2>/dev/null || true
 fi
 
-chmod +x "$SCRIPT_DIR"/*.sh 2>/dev/null
-echo -e "${GREEN}✅${NC} Made hexxFlood.sh / monitor.sh / quick.sh executable"
+chmod +x "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/lib/*.sh 2>/dev/null
+echo -e "${GREEN}✅${NC} Made hexxFlood.sh / monitor.sh / quick.sh + lib/ executable"
 
 sudo rm -f /usr/local/bin/hexxFlood
 sudo rm -f /usr/bin/hexxFlood
@@ -182,26 +210,34 @@ if [ "$SHELL_TYPE" = "zsh" ]; then
 _hexxFlood_completion() {
     local -a commands
     commands=(
-        '-t:Target IP'
-        '-u:Web URL'
-        '--web:Web mode'
-        '-p:Threads (1-200)'
-        '-s:Packet size'
-        '-d:Delay'
-        '-i:Interface'
-        '-m:Mode (easy,medium,high,extreme,apocalypse,custom)'
-        '-P:Ports'
-        '-T:Type (syn,udp,icmp,ack,rst,fin,all,http)'
-        '-D:Duration (extreme/apocalypse default 60s)'
-        '--no-spoof'
-        '--fixed-ports'
+        '-t:Target IP (Layer 3/4 flood via hping3)'
+        '-u:Target URL (auto-resolves + HTTP flood)'
+        '--port:Target port'
+        '-p:Threads / HTTP workers (1-200)'
+        '-s:Packet size in bytes (64-65495)'
+        '-d:Inter-packet delay hint (u1/u10/u100)'
+        '-i:Network interface (default wlan0)'
+        '-m:Mode (low,medium,high,extreme,apocalypse,god,custom)'
+        '-P:Ports (comma-separated, floods each)'
+        '-T:Type (syn,udp,icmp,ack,rst,fin,http,http2,websocket,graphql,ssl_reneg,slowloris,all)'
+        '-D:Duration seconds (0=forever; extreme/apocalypse/god default 60s)'
+        '--http2:Enable HTTP/2 flood'
+        '--websocket:Enable WebSocket flood'
+        '--graphql:Enable GraphQL flood'
+        '--no-spoof:Use real source IP (no --rand-source)'
+        '--fixed-ports:Hammer one static dst port'
         '--tune:Force safe system tuning on (restored on exit)'
         '--no-tune:Never touch system settings'
         '--tx-queue:NIC tx queue length while flooding'
+        '--cap:Worker-count ceiling (any interface)'
+        '--no-cap:Remove all worker caps (full power)'
+        '--unlimited:Alias for --no-cap'
         '--monitor:Open live monitor only (no attack)'
         '--monitor-mode:Monitor mode (ping,network,system,full,log)'
         '--auto-monitor:Auto-open monitor window(s) on attack start'
         '--no-monitor:Do not auto-open a monitor window'
+        '-U:Self-update (git pull)'
+        '-V:Version'
         '-h:Help'
     )
     compadd -a commands
@@ -265,9 +301,9 @@ echo "  hexxFlood -u https://example.com -T http -p 100"
 echo "  hexxFlood -u http://example.com:8080 -m high -D 60"
 echo ""
 echo -e "${CYAN}⚙️  Notes:${NC}"
-echo "  • On Wi-Fi the worker count auto-caps to the real throughput peak (~2× cores)."
-echo "  • high/extreme/apocalypse apply safe system tuning that is restored on exit."
-echo "  • extreme/apocalypse auto-stop after 60s unless you pass -D."
+echo "  • On Wi-Fi the worker count auto-caps to the real throughput peak (~4× cores)."
+echo "  • high/extreme/apocalypse/god apply safe system tuning that is restored on exit."
+echo "  • extreme/apocalypse/god auto-stop after 60s unless you pass -D."
 echo ""
 echo -e "${CYAN}📁 Installation Details:${NC}"
 echo "  Source Dir:  $SOURCE_DIR"

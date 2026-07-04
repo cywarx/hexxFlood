@@ -25,18 +25,19 @@
 
 ### Core Features
 - ✅ **6 Attack Types** (SYN, UDP, ICMP, ACK, RST, FIN)
-- ✅ **6 Attack Modes** (Easy, Medium, High, Extreme, **Apocalypse**, Custom)
-- ✅ **Core-scaling flood pool** — parallel `hping3 --flood` workers sized to your CPU cores (2× → 32×)
-- ✅ **Smart Wi-Fi cap + escape hatch** — on Wi-Fi the worker count auto-caps to a sane peak (2× cores) by default; wired scales the full ladder. Remove all limits any time with `--no-cap` / `--unlimited`, or set your own with `--cap N`
+- ✅ **6 Attack Modes** (Low, Medium, High, Extreme, **Apocalypse**, **God**) + Custom
+- ✅ **Core-scaling flood pool** — parallel `hping3 --flood` workers sized to your CPU cores (2× → 64×)
+- ✅ **Smart Wi-Fi cap + escape hatch** — on Wi-Fi the worker count auto-caps to a sane peak (4× cores) by default; wired scales the full ladder. Remove all limits any time with `--no-cap` / `--unlimited`, or set your own with `--cap N`
 - ✅ **Safe, restorable system tuning** (`--tune`) — bigger tx-queue + socket buffers + performance CPU governor, all **restored on exit**
-- ✅ **Auto-stop for heavy modes** — `extreme`/`apocalypse` default to 60s unless you pass `-D`
+- ✅ **Auto-stop for heavy modes** — `extreme`/`apocalypse`/`god` default to 60s unless you pass `-D`
 - ✅ **Custom Port Selection** & **IP Spoofing**
 - ✅ **Real-time Monitoring** — in-terminal live dashboard (pps bar, real NIC throughput, per-type hping3 breakdown, live command output) + optional `monitor.sh` windows
 - ✅ **Automatic Cleanup** & **Configuration Persistence**
 
 ### Web & HTTP Features
 - 🌐 **Web URL Support** (HTTP/HTTPS)
-- 🔥 **HTTP Flood Attack**
+- 🔥 **HTTP Flood Attack** (no root required)
+- 🧬 **Layer-7 protocol floods** — `http2`, `websocket`, `graphql`, `ssl_reneg`, `slowloris` (select via `-T`; auto-enabled by `extreme`/`apocalypse`/`god`)
 - 🔄 **User-Agent Rotation**
 - 📊 **Real-time Packet Counting**
 - 📈 **Packets Per Second (PPS) Tracking**
@@ -44,6 +45,11 @@
 - 🎯 **Domain to IP Resolution**
 - 🔒 **SSL/TLS Support**
 - 📱 **Multi-threaded HTTP Requests**
+
+### Requirements (installed automatically by `setup.sh`)
+- **`hping3`** — raw packet engine for the SYN/UDP/ICMP/ACK/RST/FIN floods
+- **`net-tools`, `ethtool`, `dnsutils`, `bc`, `sysstat`** — stats, tuning, URL resolution
+- **Python venv** at `/opt/hexxFlood-venv` with **`scapy` `colorama` `requests` `h2` `websocket-client`** — these back the Layer-7 floods (`requests`→GraphQL, `h2`→HTTP/2, `websocket-client`→WebSocket). The tool prefers this venv, so the libraries must live there.
 
 ---
 
@@ -74,6 +80,43 @@ hexxFlood --update        # or: hexxFlood -U
 
 This runs a fast-forward `git pull` in the install directory and re-applies the
 executable bit. If you have local edits that conflict, it tells you how to reset.
+
+---
+
+## 🧱 Project Structure
+
+`hexxFlood.sh` is a **thin entrypoint** — it resolves its own location, sources
+the engine modules from `lib/`, then parses arguments and runs. All the real
+logic lives in `lib/`, split by responsibility so the tool stays readable and
+easy to extend without touching the launcher.
+
+```
+hexxFlood/
+├── hexxFlood.sh        # entrypoint: module loader + arg parsing + banner/help + main()
+├── lib/
+│   ├── config.sh       # colors, version, and every default / state variable
+│   ├── utils.sh        # NIC counters, CPU/mem sampling, formatting, logging,
+│   │                   #   URL resolution, and the git self-update machinery
+│   ├── system.sh       # reversible host tuning, GOD MODE kernel limits, root elevation
+│   ├── attacks.sh      # the flood arsenal (HTTP/1.1·2, WebSocket, GraphQL, SSL-reneg,
+│   │                   #   Slowloris, hping3 SYN/UDP/ICMP/ACK/RST/FIN), worker
+│   │                   #   scaling, and the low→god mode presets
+│   └── dashboard.sh    # live in-terminal dashboard, end-of-run report, cleanup/teardown
+├── monitor.sh          # standalone external monitor window (ping/network/system/full/log)
+│                       #   — a separate program, run in its own terminal; not lib/dashboard.sh
+├── quick.sh            # convenience launcher / update shortcut
+├── setup.sh            # installer: deps + wrapper + sudoers + shell completion
+└── README.md
+```
+
+> **Important:** the `lib/` directory must always travel with `hexxFlood.sh`.
+> `setup.sh`, `hexxFlood -U`, and the internal deploy step all copy `lib/`
+> automatically — but if you `scp`/copy the tool by hand, copy the whole folder,
+> not just `hexxFlood.sh`. Running the entrypoint without its modules aborts with
+> a clear `FATAL: missing module …` message rather than misbehaving.
+
+Every command-line flag, attack mode, and behaviour documented below is
+unchanged by this layout — it is purely an internal reorganisation.
 
 ---
 
@@ -119,10 +162,10 @@ An `AUTO_ROOT` passed in the environment overrides the value saved in the config
 | `-s, --size BYTES`      | Packet size (64-65495, default: 65495) |
 | `-d, --delay MS`        | Delay (`u1`, `u10`, `u100`, default: `u1`) |
 | `-i, --interface IFACE` | Network interface (default: `wlan0`) |
-| `-m, --mode MODE`       | Mode: `easy` \| `medium` \| `high` \| `extreme` \| `apocalypse` \| `custom` |
+| `-m, --mode MODE`       | Mode: `low` \| `medium` \| `high` \| `extreme` \| `apocalypse` \| `god` \| `custom` |
 | `-P, --ports PORTS`     | Comma-separated dst ports — floods **each** port (e.g. `80,443,22`) |
-| `-T, --type TYPES`      | Types: `syn,udp,icmp,ack,rst,fin,all,http` |
-| `-D, --duration SEC`    | Duration in seconds (0 = infinite). `extreme`/`apocalypse` default to `60` unless set |
+| `-T, --type TYPES`      | Types: `syn,udp,icmp,ack,rst,fin,http,http2,websocket,graphql,ssl_reneg,slowloris,all` |
+| `-D, --duration SEC`    | Duration in seconds (0 = infinite). `extreme`/`apocalypse`/`god` default to `60` unless set |
 | `--no-spoof`            | Disable source-IP spoofing (drops `--rand-source`) |
 | `--fixed-ports`         | Use a static dst port instead of an incrementing one |
 | `--tune`                | Force safe system tuning on (tx-queue, socket buffers, `performance` governor — **restored on exit**) |
@@ -143,15 +186,16 @@ sized in multiples of `nproc` rather than spawning hundreds of thrashing process
 
 | Mode | Flood workers | Attack Types | System tuning | Auto-stop |
 |------|---------------|--------------|---------------|-----------|
-| `easy`       | 2× cores  | syn, udp, icmp | off | ∞ |
+| `low`        | 2× cores  | syn, udp, icmp | off | ∞ |
 | `medium`     | 4× cores  | syn, udp, icmp, ack | off | ∞ |
 | `high`       | 8× cores  | syn, udp, icmp, ack, rst, fin | on | ∞ |
-| `extreme`    | **16× cores** | all | on | **60s** |
-| `apocalypse` | **32× cores** | all | on | **60s** |
+| `extreme`    | **16× cores** | all + http2/ws/graphql | on | **60s** |
+| `apocalypse` | **32× cores** | all + full Layer-7 | on | **60s** |
+| `god`        | **64× cores** | everything + kernel limits | on | **60s** |
 | `custom`     | 8× cores  | your own `-P / -T` values | auto | ∞ |
 
 > **Wi-Fi auto-cap (default) — with a full-power escape hatch.** On a **Wi-Fi** interface the
-> auto worker count is capped to **~2× cores** by default. A wireless link is shared and
+> auto worker count is capped to **~4× cores** by default. A wireless link is shared and
 > half-duplex with a small driver queue, so this cap keeps throughput at its sweet spot on
 > Wi-Fi. **Wired interfaces are never auto-capped** and scale the full ladder (64/128/256…).
 >
@@ -169,7 +213,7 @@ sized in multiples of `nproc` rather than spawning hundreds of thrashing process
 > `sudo HEXXFLOOD_WORKERS=2000 ./hexxFlood.sh -t 192.168.1.14 -m extreme`.
 
 > **Maximising impact (read this):**
-> - **On Wi-Fi, use `--no-cap` when you want maximum pressure.** The default 2× cores cap is
+> - **On Wi-Fi, use `--no-cap` when you want maximum pressure.** The default 4× cores cap is
 >   the safe Wi-Fi sweet spot; to drive the target's latency into the hundreds/thousands of ms,
 >   add `--no-cap` (or force a big count like `HEXXFLOOD_WORKERS=500` / `2000`). On **wired**
 >   NICs there's no cap to begin with — just pick a heavy mode.
@@ -205,9 +249,9 @@ sudo ./hexxFlood.sh -u http://example.com:8080 -T http -m high
 #### 🔥 Picking the intensity — `-m` (mode)
 
 ```bash
-# -m easy : 2× cores, syn/udp/icmp, no tuning, runs forever. Use for a gentle
-#           smoke test / confirming the tool works without hammering anything.
-sudo ./hexxFlood.sh -t 192.168.1.14 -m easy
+# -m low : 2× cores, syn/udp/icmp, no tuning, runs forever. Use for a gentle
+#          smoke test / confirming the tool works without hammering anything.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m low
 
 # -m medium : 4× cores, adds ack. A moderate load — use to see early impact.
 sudo ./hexxFlood.sh -t 192.168.1.14 -m medium
@@ -220,9 +264,13 @@ sudo ./hexxFlood.sh -t 192.168.1.14 -m high
 #              short, hard burst when you want maximum pressure but a safe auto-cutoff.
 sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme
 
-# -m apocalypse : 32× cores, everything maxed, tuning on, auto-stops after 60s.
-#                 The heaviest preset — use only on wired lab gear you fully control.
+# -m apocalypse : 32× cores, full Layer-7 stack + tuning, auto-stops after 60s.
+#                 Use only on wired lab gear you fully control.
 sudo ./hexxFlood.sh -t 192.168.1.14 -m apocalypse
+
+# -m god : 64× cores, EVERYTHING + kernel-level limits (rmem/wmem/backlog),
+#          tuning on, auto-stops after 60s. The absolute maximum preset.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m god
 
 # -m custom : ignore the presets and drive it yourself with -T / -P / -p / -s.
 #             Use when you want exact control over types, ports and packet size.
@@ -311,7 +359,7 @@ sudo ./hexxFlood.sh -t 192.168.1.14 -T syn --no-spoof --fixed-ports
 ```bash
 # --tune : force SAFE, restorable tuning ON (bigger NIC tx-queue + socket buffers +
 #          performance CPU governor). Use to squeeze out max throughput on modes
-#          where tuning is off by default (easy/medium/custom). Restored on exit.
+#          where tuning is off by default (low/medium/custom). Restored on exit.
 sudo ./hexxFlood.sh -t 192.168.1.14 -m medium --tune
 
 # --no-tune : never touch system settings. Use on production-ish boxes or when you
@@ -326,7 +374,7 @@ sudo ./hexxFlood.sh -t 192.168.1.14 -m high --tx-queue 20000
 #### 🧵 Worker-count caps & overrides — `--no-cap`, `--cap`, `HEXXFLOOD_WORKERS`
 
 ```bash
-# (default) On Wi-Fi the worker count auto-caps to 2× cores — the safe sweet spot.
+# (default) On Wi-Fi the worker count auto-caps to 4× cores — the safe sweet spot.
 #           On wired interfaces there is no cap. Nothing to pass for this.
 sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme -i wlan0
 
@@ -475,7 +523,7 @@ Preset one-liners for common scenarios:
 ./quick.sh local             # extreme attack on default lab target
 ./quick.sh local-high        # high-mode attack on default lab target
 ./quick.sh local-nuke        # apocalypse (60s, max overdrive) on default lab target
-./quick.sh local-test        # easy 30s smoke test
+./quick.sh local-test        # low 30s smoke test
 ./quick.sh web http://target # extreme web flood
 ./quick.sh lab 10.0.0.5      # high-mode attack on ports 80,443,22
 ./quick.sh custom            # interactive prompts

