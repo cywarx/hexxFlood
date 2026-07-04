@@ -1,6 +1,6 @@
 # 💀 hexxFlood - Ultimate Network Stress Testing Tool
 
-[![Version](https://img.shields.io/badge/version-1.0-red.svg)](https://github.com/Cywarx/hexxFlood)
+[![Version](https://img.shields.io/badge/version-2.0-red.svg)](https://github.com/Cywarx/hexxFlood)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Kali](https://img.shields.io/badge/Kali-Linux-blue.svg)](https://www.kali.org/)
 [![Bash](https://img.shields.io/badge/Bash-4.0+-green.svg)](https://www.gnu.org/software/bash/)
@@ -25,14 +25,14 @@
 
 ### Core Features
 - ✅ **6 Attack Types** (SYN, UDP, ICMP, ACK, RST, FIN)
-- ✅ **5 Attack Modes** (Easy, Medium, High, Extreme, Custom)
-- ✅ **Configurable Threads** (1-200)
-- ✅ **Custom Port Selection**
-- ✅ **IP Spoofing**
+- ✅ **6 Attack Modes** (Easy, Medium, High, Extreme, **Apocalypse**, Custom)
+- ✅ **Core-scaling flood pool** — parallel `hping3 --flood` workers sized to your CPU cores (2× → 32×)
+- ✅ **Wireless auto-cap** — on Wi-Fi the worker count is auto-tuned to the real throughput peak (more workers congestion-collapse and send *less*)
+- ✅ **Safe, restorable system tuning** (`--tune`) — bigger tx-queue + socket buffers + performance CPU governor, all **restored on exit**
+- ✅ **Auto-stop for heavy modes** — `extreme`/`apocalypse` default to 60s unless you pass `-D`
+- ✅ **Custom Port Selection** & **IP Spoofing**
 - ✅ **Real-time Monitoring** — in-terminal live dashboard (pps bar, real NIC throughput, per-type hping3 breakdown, live command output) + optional `monitor.sh` windows
-- ✅ **Automatic Cleanup**
-- ✅ **Configuration Persistence**
-- ✅ **System Optimization**
+- ✅ **Automatic Cleanup** & **Configuration Persistence**
 
 ### Web & HTTP Features
 - 🌐 **Web URL Support** (HTTP/HTTPS)
@@ -93,12 +93,15 @@ sudo ./hexxFlood.sh [OPTIONS]
 | `-s, --size BYTES`      | Packet size (64-65495, default: 65495) |
 | `-d, --delay MS`        | Delay (`u1`, `u10`, `u100`, default: `u1`) |
 | `-i, --interface IFACE` | Network interface (default: `wlan0`) |
-| `-m, --mode MODE`       | Mode: `easy` \| `medium` \| `high` \| `extreme` \| `custom` |
+| `-m, --mode MODE`       | Mode: `easy` \| `medium` \| `high` \| `extreme` \| `apocalypse` \| `custom` |
 | `-P, --ports PORTS`     | Comma-separated dst ports — floods **each** port (e.g. `80,443,22`) |
 | `-T, --type TYPES`      | Types: `syn,udp,icmp,ack,rst,fin,all,http` |
-| `-D, --duration SEC`    | Duration in seconds (0 = infinite) |
+| `-D, --duration SEC`    | Duration in seconds (0 = infinite). `extreme`/`apocalypse` default to `60` unless set |
 | `--no-spoof`            | Disable source-IP spoofing (drops `--rand-source`) |
 | `--fixed-ports`         | Use a static dst port instead of an incrementing one |
+| `--tune`                | Force safe system tuning on (tx-queue, socket buffers, `performance` governor — **restored on exit**) |
+| `--no-tune`             | Never touch system settings |
+| `--tx-queue NUM`        | NIC tx queue length while flooding (default: `10000`) |
 | `-U, --update`          | Update hexxFlood to the latest version (`git pull`) |
 | `-V, --version`         | Show version and exit |
 | `-h, --help`            | Show help |
@@ -106,27 +109,39 @@ sudo ./hexxFlood.sh [OPTIONS]
 ### Attack Modes
 
 Each mode runs a pool of parallel `hping3 --flood` workers sized to your CPU cores.
-The pool is round-robined across the selected attack types.
+The pool is round-robined across the selected attack types. **Throughput scales with CPU
+cores, not process count** — one `--flood` worker already saturates a core, so the pool is
+sized in multiples of `nproc` rather than spawning hundreds of thrashing processes.
 
-| Mode | Flood workers | Attack Types |
-|------|---------------|--------------|
-| `easy`    | 2× cores  | syn, udp, icmp |
-| `medium`  | 4× cores  | syn, udp, icmp, ack |
-| `high`    | 8× cores  | syn, udp, icmp, ack, rst, fin |
-| `extreme` | **16× cores** | all |
-| `custom`  | 8× cores  | your own `-P / -T` values |
+| Mode | Flood workers | Attack Types | System tuning | Auto-stop |
+|------|---------------|--------------|---------------|-----------|
+| `easy`       | 2× cores  | syn, udp, icmp | off | ∞ |
+| `medium`     | 4× cores  | syn, udp, icmp, ack | off | ∞ |
+| `high`       | 8× cores  | syn, udp, icmp, ack, rst, fin | on | ∞ |
+| `extreme`    | **16× cores** | all | on | **60s** |
+| `apocalypse` | **32× cores** | all | on | **60s** |
+| `custom`     | 8× cores  | your own `-P / -T` values | auto | ∞ |
 
-> **Full manual control:** set `HEXXFLOOD_WORKERS=N` to force an exact, **uncapped**
-> worker count, e.g. `sudo HEXXFLOOD_WORKERS=600 ./hexxFlood.sh -t 192.168.1.14 -m extreme`.
-> Auto modes cap at 256 workers; the override has no cap.
+> **Wireless auto-cap (important).** On a **Wi-Fi** interface the auto worker count is capped
+> to **~2× cores**. A wireless link is a shared, half-duplex medium with a small driver queue:
+> past a low worker count the parallel floods collide and *congestion-collapse*, so **more
+> workers send drastically LESS** (measured: 16 workers ≈ 900 pps vs 256 workers ≈ 15 pps).
+> The cap **is** peak strength on Wi-Fi — it's shown in the config output. **Wired interfaces
+> scale up the full ladder** (64/128/256 workers). Change the cap with `WIFI_WORKER_CAP=N`.
+
+> **Full manual control:** set `HEXXFLOOD_WORKERS=N` to force an exact, **uncapped** worker
+> count (bypasses the mode sizing *and* the wireless cap), e.g.
+> `sudo HEXXFLOOD_WORKERS=600 ./hexxFlood.sh -t 192.168.1.14 -m extreme`.
+> Auto modes otherwise cap at 1024 workers; the override has no cap.
 
 > **Maximising impact (read this):**
-> - **Packet size is the biggest lever.** The default `-s 65495` maxes *bandwidth* but
->   sends few packets/sec — over Wi-Fi that's very slow. For **maximum packets/sec** (which
->   overwhelms a host's CPU/interrupts and causes latency + loss), use a small size:
->   `sudo ./hexxFlood.sh -t <ip> -m extreme -s 120`.
-> - **Use ethernet, not Wi-Fi.** Wireless NICs are poor at high-rate raw/spoofed injection
->   regardless of settings; ethernet raises real throughput by orders of magnitude.
+> - **On Wi-Fi, fewer workers is more power.** The tool already auto-caps for you — don't fight
+>   it by forcing huge `HEXXFLOOD_WORKERS`; on wireless that *reduces* throughput.
+> - **Packet size is the other big lever.** The default `-s 65495` maxes *bandwidth* but sends
+>   few packets/sec. For **maximum packets/sec** (overwhelms a host's CPU/interrupts), use a
+>   small size: `sudo ./hexxFlood.sh -t <ip> -m extreme -s 120`.
+> - **Use ethernet, not Wi-Fi, for raw throughput.** Wired NICs handle high-rate raw/spoofed
+>   injection far better and let the heavy modes scale — orders of magnitude more real traffic.
 > - **Measure impact from a *third* device**, not the attacker — a `ping` on the attacking
 >   host reads high mostly because its own CPU is busy, not because the target is worse off.
 
@@ -145,8 +160,14 @@ sudo ./hexxFlood.sh -t 192.168.1.14 -T syn --no-spoof --fixed-ports
 # HTTP flood against a web app
 sudo ./hexxFlood.sh -u http://192.168.1.14 -T http -p 100
 
-# All attack types, extreme mode
+# All attack types, extreme mode (auto-stops after 60s, tuning restored on exit)
 sudo ./hexxFlood.sh -t 192.168.1.14 -T all -m extreme
+
+# Maximum overdrive — apocalypse (32× cores on wired; auto-capped on Wi-Fi), 60s
+sudo ./hexxFlood.sh -t 192.168.1.14 -m apocalypse -D 60
+
+# Force an exact worker count and skip system tuning
+sudo HEXXFLOOD_WORKERS=16 ./hexxFlood.sh -t 192.168.1.14 -m extreme --no-tune
 ```
 
 ### Live attack output (in-terminal dashboard)
@@ -198,10 +219,11 @@ with rules that adapt to your terminal width so it stays tidy on small screens:
    ✔  hping3 flood processes terminated
    ✔  HTTP flood terminated
    ✔  Temporary files removed
+   ✔  System settings restored
 
    📊 Final Statistics
       Total Packets Sent : 32,418
-      Total Time         : 36s
+      Total Attack Time  : 36s
       Average PPS        : 900
 ────────────────────────────────────────────────────────────────
    ✅ Cleanup complete.  Stay ethical. 👋
@@ -217,6 +239,8 @@ Preset one-liners for common scenarios:
 
 ```bash
 ./quick.sh local             # extreme attack on default lab target
+./quick.sh local-high        # high-mode attack on default lab target
+./quick.sh local-nuke        # apocalypse (60s, max overdrive) on default lab target
 ./quick.sh local-test        # easy 30s smoke test
 ./quick.sh web http://target # extreme web flood
 ./quick.sh lab 10.0.0.5      # high-mode attack on ports 80,443,22

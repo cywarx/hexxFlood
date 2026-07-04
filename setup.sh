@@ -2,7 +2,7 @@
 
 # ============================================================
 # hexxFlood - Universal Setup Script
-# Version: 1.0
+# Version: 2.0
 # ============================================================
 
 # Colors
@@ -34,7 +34,7 @@ echo "║   ██╔══██║██╔══╝   ██╔██╗  █
 echo "║   ██║  ██║███████╗██╔╝ ██╗██╔╝ ██╗██║     ███████╗╚██████╔╝╚██████╔╝██████╔╝   ║"
 echo "║   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝    ║"
 echo "║                                                                                ║"
-echo "║                          Universal Setup Script v1.0                           ║"
+echo "║                          Universal Setup Script v2.0                           ║"
 echo "║                                Use Responsibly!                                ║"
 echo "╠════════════════════════════════════════════════════════════════════════════════╣"
 echo "║                             Author: CyWarX                                     ║"
@@ -189,12 +189,15 @@ _hexxFlood_completion() {
         '-s:Packet size'
         '-d:Delay'
         '-i:Interface'
-        '-m:Mode (easy,medium,high,extreme,custom)'
+        '-m:Mode (easy,medium,high,extreme,apocalypse,custom)'
         '-P:Ports'
         '-T:Type (syn,udp,icmp,ack,rst,fin,all,http)'
-        '-D:Duration'
+        '-D:Duration (extreme/apocalypse default 60s)'
         '--no-spoof'
         '--fixed-ports'
+        '--tune:Force safe system tuning on (restored on exit)'
+        '--no-tune:Never touch system settings'
+        '--tx-queue:NIC tx queue length while flooding'
         '--monitor:Open live monitor only (no attack)'
         '--monitor-mode:Monitor mode (ping,network,system,full,log)'
         '--auto-monitor:Auto-open monitor window(s) on attack start'
@@ -254,11 +257,17 @@ echo ""
 echo -e "${CYAN}📖 Usage Examples:${NC}"
 echo "  # IP Attack"
 echo "  hexxFlood -t 192.168.1.10 -m extreme"
+echo "  hexxFlood -t 192.168.1.10 -m apocalypse -D 60   # maximum overdrive"
 echo ""
 echo "  # Web URL Attack"
 echo "  hexxFlood -u http://example.com -m extreme"
 echo "  hexxFlood -u https://example.com -T http -p 100"
 echo "  hexxFlood -u http://example.com:8080 -m high -D 60"
+echo ""
+echo -e "${CYAN}⚙️  Notes:${NC}"
+echo "  • On Wi-Fi the worker count auto-caps to the real throughput peak (~2× cores)."
+echo "  • high/extreme/apocalypse apply safe system tuning that is restored on exit."
+echo "  • extreme/apocalypse auto-stop after 60s unless you pass -D."
 echo ""
 echo -e "${CYAN}📁 Installation Details:${NC}"
 echo "  Source Dir:  $SOURCE_DIR"
