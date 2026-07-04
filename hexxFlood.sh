@@ -162,9 +162,17 @@ parse_url() {
             WEB_PORT="80"
         fi
     fi
-    WEB_IP=$(dig +short "$WEB_HOST" | head -1)
-    if [ -z "$WEB_IP" ]; then
-        WEB_IP=$(ping -c 1 "$WEB_HOST" 2>/dev/null | head -1 | grep -oP '(?<=\().*(?=\))' || echo "")
+    # If the host is already an IPv4 literal, use it as-is (dig would return
+    # nothing and the ping fallback could otherwise mis-parse the address).
+    if [[ "$WEB_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        WEB_IP="$WEB_HOST"
+    else
+        # Prefer a real A record; keep only clean IPv4 lines (skip CNAMEs).
+        WEB_IP=$(dig +short "$WEB_HOST" 2>/dev/null | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+        if [ -z "$WEB_IP" ]; then
+            # Fallback: first parenthesised address in ping's header line.
+            WEB_IP=$(ping -c 1 -W 2 "$WEB_HOST" 2>/dev/null | head -1 | grep -oP '\(\K[0-9.]+')
+        fi
     fi
     if [ -z "$WEB_IP" ]; then
         echo -e "${RED}❌ Could not resolve hostname: $WEB_HOST${NC}"
