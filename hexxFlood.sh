@@ -107,6 +107,11 @@ show_help() {
     echo "  --no-tune                Never touch system settings"
     echo "  --tx-queue NUM           NIC tx queue length while flooding (default: 10000)"
     echo "  (tip) HEXXFLOOD_WORKERS=N Force an exact, UNCAPPED parallel worker count"
+    echo "  (tip) WIFI_WORKER_CAP=N   Change the wireless worker cap (default: 2× cores)"
+    echo ""
+    echo -e "${YELLOW}Note:${NC} on a Wi-Fi interface the auto worker count is capped to ~2× cores —"
+    echo "      that is the real throughput peak there (more workers congestion-collapse"
+    echo "      and send LESS). Wired interfaces scale up the full mode ladder."
     echo ""
     echo -e "${YELLOW}Monitoring Options:${NC}"
     echo "  --monitor                Open the live monitor only (no attack)"
@@ -532,6 +537,24 @@ compute_flood_workers() {
         *)          FLOOD_WORKERS=$(( cores * 8 )) ;;   # custom
     esac
     [ "$FLOOD_WORKERS" -lt 1 ] && FLOOD_WORKERS=1
+
+    # WIRELESS AUTO-CAP. A Wi-Fi link is a shared, half-duplex medium with a
+    # small driver queue: past a low worker count the parallel --flood senders
+    # collide and congestion-collapse, so MORE workers send drastically LESS
+    # (measured on wlan0: 16 workers ~900 pps, 256 workers ~15 pps). On a
+    # wireless iface we therefore cap the AUTO count to the real sweet spot
+    # (~2x cores) for MAXIMUM throughput — this is not a limit on strength, it
+    # IS peak strength here. Wired ifaces are left to scale up. Override with
+    # WIFI_WORKER_CAP=N, or bypass entirely with HEXXFLOOD_WORKERS=N (above).
+    if [ -d "/sys/class/net/${INTERFACE}/wireless" ] || [ -e "/sys/class/net/${INTERFACE}/phy80211" ]; then
+        local wifi_cap=${WIFI_WORKER_CAP:-$(( cores * 2 ))}
+        [[ "$wifi_cap" =~ ^[0-9]+$ ]] && [ "$wifi_cap" -ge 1 ] || wifi_cap=$(( cores * 2 ))
+        if [ "$FLOOD_WORKERS" -gt "$wifi_cap" ]; then
+            FLOOD_WORKERS=$wifi_cap
+            WIFI_CAPPED=1
+        fi
+    fi
+
     # Generous ceiling for the auto modes; use HEXXFLOOD_WORKERS to exceed it.
     [ "$FLOOD_WORKERS" -gt 1024 ] && FLOOD_WORKERS=1024
 }
@@ -958,6 +981,7 @@ main() {
     echo "  Attack Types: ${ATTACK_TYPES:-all}"
     echo "  Packet Size: $PACKET_SIZE bytes"
     echo -e "  Flood Power: ${GREEN}${FLOOD_WORKERS}${NC} parallel hping3 --flood workers (${CORES} CPU cores)$([ "${WORKERS_FORCED:-0}" = 1 ] && echo " (forced)")"
+    [ "${WIFI_CAPPED:-0}" = 1 ] && echo -e "  ${YELLOW}↳ wireless iface '$INTERFACE' → capped to WiFi peak (2× cores) for max real throughput.${NC} Override: HEXXFLOOD_WORKERS=N or WIFI_WORKER_CAP=N"
     echo "  System Tuning: $([ "$SYS_TUNE" = true ] && echo "on (restored on exit)" || echo "off")"
     echo "  Duration: ${ATTACK_DURATION:-Infinite}"
     echo ""
