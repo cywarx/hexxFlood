@@ -158,7 +158,7 @@ An `AUTO_ROOT` passed in the environment overrides the value saved in the config
 |--------|-------------|
 | `-t, --target IP`       | Target IP address |
 | `-u, --url URL`         | Target Web URL (`http://example.com`) |
-| `-p, --threads NUM`     | Number of threads (1-200, default: 50) |
+| `-p, --threads NUM`     | HTTP worker threads (default: 50; a mode preset overrides this) |
 | `-s, --size BYTES`      | Packet size (64-65495, default: 65495) |
 | `-d, --delay MS`        | Delay (`u1`, `u10`, `u100`, default: `u1`) |
 | `-i, --interface IFACE` | Network interface (default: `wlan0`) |
@@ -310,7 +310,7 @@ sudo ./hexxFlood.sh -u http://192.168.1.14 -T http -p 100
 #               Use to hit several services simultaneously (web + ssh + https).
 sudo ./hexxFlood.sh -t 192.168.1.14 -T syn -P 80,443,22
 
-# -p, --threads : worker/thread count (1-200). Mainly drives the HTTP flood's
+# -p, --threads : HTTP worker-thread count (default 50; a mode preset overrides it). Drives the HTTP flood.s
 #                 concurrency; raise it to push a web app harder.
 sudo ./hexxFlood.sh -u http://192.168.1.14 -T http -p 150
 

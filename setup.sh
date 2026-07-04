@@ -213,7 +213,7 @@ _hexxFlood_completion() {
         '-t:Target IP (Layer 3/4 flood via hping3)'
         '-u:Target URL (auto-resolves + HTTP flood)'
         '--port:Target port'
-        '-p:Threads / HTTP workers (1-200)'
+        '-p:HTTP worker threads (default 50; mode overrides)'
         '-s:Packet size in bytes (64-65495)'
         '-d:Inter-packet delay hint (u1/u10/u100)'
         '-i:Network interface (default wlan0)'

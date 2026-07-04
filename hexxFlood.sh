@@ -244,7 +244,7 @@ show_help() {
     echo -e "${YELLOW}ATTACK SHAPING${NC}"
     echo "  -m, --mode MODE        Intensity preset (see MODES below)"
     echo "  -T, --type LIST        Attack types, comma-separated (see TYPES below)"
-    echo "  -p, --threads N        Worker/HTTP-thread count (1-200)"
+    echo "  -p, --threads N        HTTP worker threads (default 50; a mode preset overrides this)"
     echo "  -s, --size BYTES       Packet size 64-65495 (BIG=bandwidth, SMALL=max pps)"
     echo "  -P, --ports LIST       Destination ports, comma-separated (floods each)"
     echo "  -D, --duration SEC     Run SEC seconds then auto-stop (0 = forever)"

