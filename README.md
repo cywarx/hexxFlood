@@ -83,6 +83,32 @@ executable bit. If you have local edits that conflict, it tells you how to reset
 sudo ./hexxFlood.sh [OPTIONS]
 ```
 
+### 🔐 Root / privileges
+
+The raw-packet engine (`hping3`) and system tuning **require root**. If you launch
+hexxFlood **without** root, it asks at startup:
+
+```
+🔐 hexxFlood's raw-packet engine (hping3) and system tuning need ROOT.
+Run as root now? [Y/n]:
+```
+
+- **`Y` (default)** — re-launches itself via `sudo` (one password prompt) and runs at full power.
+- **`n`** — keeps running unprivileged: only the **HTTP/URL flood** works; raw-packet
+  floods and tuning are disabled. (If the attack is raw-packet only, it explains this and exits.)
+
+Run it with `sudo ./hexxFlood.sh …` up front to skip the prompt entirely.
+
+To skip the prompt **without** launching under sudo, set `AUTO_ROOT` — as an env var
+or in `~/.hexxFlood_config`:
+
+```bash
+AUTO_ROOT=yes ./hexxFlood.sh -t 192.168.1.14 -m high   # auto-elevate (one password prompt)
+AUTO_ROOT=no  ./hexxFlood.sh -u http://example.com -T http   # stay unprivileged (HTTP only)
+```
+
+An `AUTO_ROOT` passed in the environment overrides the value saved in the config file.
+
 ### Options
 
 | Option | Description |
