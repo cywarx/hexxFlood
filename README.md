@@ -98,10 +98,16 @@ hexxFlood/
 │   ├── utils.sh        # NIC counters, CPU/mem sampling, formatting, logging,
 │   │                   #   URL resolution, and the git self-update machinery
 │   ├── system.sh       # reversible host tuning, GOD MODE kernel limits, root elevation
-│   ├── attacks.sh      # the flood arsenal (HTTP/1.1·2, WebSocket, GraphQL, SSL-reneg,
-│   │                   #   Slowloris, hping3 SYN/UDP/ICMP/ACK/RST/FIN), worker
-│   │                   #   scaling, and the low→god mode presets
+│   ├── attacks.sh      # hping3 SYN/UDP/ICMP/ACK/RST/FIN launchers, the launcher
+│   │                   #   that runs the payloads/ scripts, worker scaling, mode presets
 │   └── dashboard.sh    # live in-terminal dashboard, end-of-run report, cleanup/teardown
+├── payloads/           # the Layer-7 flood scripts, executed by lib/attacks.sh
+│   ├── http_flood.py       # HTTP/1.1 request flood (no root needed)
+│   ├── http2_flood.py      # HTTP/2 stream flood        (needs python 'h2')
+│   ├── websocket_flood.py  # WebSocket flood            (needs 'websocket-client')
+│   ├── graphql_flood.py    # GraphQL query/mutation flood (needs 'requests')
+│   ├── ssl_reneg.py        # TLS renegotiation attack
+│   └── slowloris.py        # Slowloris slow-header attack
 ├── monitor.sh          # standalone external monitor window (ping/network/system/full/log)
 │                       #   — a separate program, run in its own terminal; not lib/dashboard.sh
 ├── quick.sh            # convenience launcher / update shortcut
@@ -109,9 +115,9 @@ hexxFlood/
 └── README.md
 ```
 
-> **Important:** the `lib/` directory must always travel with `hexxFlood.sh`.
-> `setup.sh`, `hexxFlood -U`, and the internal deploy step all copy `lib/`
-> automatically — but if you `scp`/copy the tool by hand, copy the whole folder,
+> **Important:** the `lib/` and `payloads/` directories must always travel with
+> `hexxFlood.sh`. `setup.sh`, `hexxFlood -U`, and the internal deploy step all copy
+> them automatically — but if you `scp`/copy the tool by hand, copy the whole folder,
 > not just `hexxFlood.sh`. Running the entrypoint without its modules aborts with
 > a clear `FATAL: missing module …` message rather than misbehaving.
 

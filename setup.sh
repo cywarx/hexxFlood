@@ -60,12 +60,17 @@ else
             echo -e "${GREEN}✅${NC} Copied $f"
         fi
     done
-    # hexxFlood.sh is now a thin entrypoint that sources lib/*.sh — the whole
-    # lib/ directory must be deployed alongside it or the tool won't start.
+    # hexxFlood.sh is now a thin entrypoint that sources lib/*.sh and runs the
+    # Layer-7 scripts in payloads/ — both directories must deploy alongside it.
     if [ -d "$SOURCE_DIR/lib" ]; then
         mkdir -p "$INSTALL_DIR/lib"
         cp -f "$SOURCE_DIR"/lib/*.sh "$INSTALL_DIR/lib/"
         echo -e "${GREEN}✅${NC} Copied lib/ ($(ls -1 "$SOURCE_DIR"/lib/*.sh | wc -l | tr -d ' ') modules)"
+    fi
+    if [ -d "$SOURCE_DIR/payloads" ]; then
+        mkdir -p "$INSTALL_DIR/payloads"
+        cp -f "$SOURCE_DIR"/payloads/*.py "$INSTALL_DIR/payloads/"
+        echo -e "${GREEN}✅${NC} Copied payloads/ ($(ls -1 "$SOURCE_DIR"/payloads/*.py | wc -l | tr -d ' ') scripts)"
     fi
 fi
 
@@ -149,8 +154,8 @@ else
         || pip3 install $HEXX_PYDEPS 2>/dev/null || true
 fi
 
-chmod +x "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/lib/*.sh 2>/dev/null
-echo -e "${GREEN}✅${NC} Made hexxFlood.sh / monitor.sh / quick.sh + lib/ executable"
+chmod +x "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/lib/*.sh "$SCRIPT_DIR"/payloads/*.py 2>/dev/null
+echo -e "${GREEN}✅${NC} Made hexxFlood.sh / monitor.sh / quick.sh + lib/ + payloads/ executable"
 
 sudo rm -f /usr/local/bin/hexxFlood
 sudo rm -f /usr/bin/hexxFlood

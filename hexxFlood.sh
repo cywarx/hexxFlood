@@ -25,6 +25,8 @@
 # ------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" 2>/dev/null || cd "$(dirname "$0")" 2>/dev/null; pwd)"
 LIB_DIR="$SCRIPT_DIR/lib"
+# Directory holding the standalone Layer-7 flood scripts (lib/attacks.sh runs them).
+PAYLOAD_DIR="$SCRIPT_DIR/payloads"
 
 for _mod in config utils system attacks dashboard; do
     if [ ! -f "$LIB_DIR/$_mod.sh" ]; then

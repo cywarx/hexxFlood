@@ -204,8 +204,9 @@ cleanup() {
         done
     } >/dev/null 2>&1
 
-    # Remove generated temp scripts. Note the slowloris file is /tmp/slowloris.py
-    # (no underscore) so it needs its own glob — *_loris.py never matched it.
+    # Legacy cleanup: older versions generated the flood scripts in /tmp; the
+    # payloads now ship in payloads/ and are never copied to /tmp, but sweep any
+    # stale /tmp copies left by a pre-upgrade run (harmless if none exist).
     rm -f /tmp/*_flood.py /tmp/*_reneg.py /tmp/*loris.py /tmp/api_server.py 2>/dev/null
     sudo -n rm -f /tmp/*_flood.py /tmp/*_reneg.py /tmp/*loris.py /tmp/api_server.py 2>/dev/null
     

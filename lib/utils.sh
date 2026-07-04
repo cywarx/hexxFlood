@@ -124,13 +124,17 @@ deploy_runtime() {
     for f in hexxFlood.sh monitor.sh quick.sh setup.sh README.md LICENSE; do
         [ -f "$src/$f" ] && cp -f "$src/$f" "$dst/$f" 2>/dev/null
     done
-    # The engine now lives in lib/ — it MUST travel with hexxFlood.sh or the
-    # deployed copy can't source its modules.
+    # The engine (lib/) and the Layer-7 payloads (payloads/) MUST travel with
+    # hexxFlood.sh or the deployed copy can't source its modules / run L7 floods.
     if [ -d "$src/lib" ]; then
         mkdir -p "$dst/lib" 2>/dev/null
         cp -f "$src"/lib/*.sh "$dst/lib/" 2>/dev/null
     fi
-    chmod +x "$dst"/*.sh "$dst"/lib/*.sh 2>/dev/null
+    if [ -d "$src/payloads" ]; then
+        mkdir -p "$dst/payloads" 2>/dev/null
+        cp -f "$src"/payloads/*.py "$dst/payloads/" 2>/dev/null
+    fi
+    chmod +x "$dst"/*.sh "$dst"/lib/*.sh "$dst"/payloads/*.py 2>/dev/null
     echo -e "${GREEN}✅ Redeployed updated files to $dst${NC}"
 }
 

