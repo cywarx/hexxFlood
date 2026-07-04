@@ -52,6 +52,16 @@ AUTO_ROOT="${AUTO_ROOT:-}"   # keep any value passed in the environment
 SYS_TUNE=""              # ""=auto, true=force on, false=off  (--tune / --no-tune)
 TX_QUEUE_LEN=10000       # NIC tx queue length while flooding (--tx-queue)
 
+# Worker-count ceiling controls.
+#   * By DEFAULT, on a WIRELESS interface the worker count is auto-capped to a
+#     sane Wi-Fi peak (2× cores) — this works well on Wi-Fi. Wired interfaces are
+#     never auto-capped and scale the full mode ladder.
+#   * NO_CAP=true (--no-cap / --unlimited) removes ALL caps for full power.
+#   * WORKER_CAP=N (--cap N or WIFI_WORKER_CAP=N env) sets an explicit ceiling
+#     on ANY interface, overriding the default Wi-Fi value.
+NO_CAP=false
+WORKER_CAP="${WIFI_WORKER_CAP:-}"
+
 # Monitoring
 AUTO_MONITOR=true        # auto-open a monitor terminal when an attack starts
 MONITOR_WINDOWS="full"   # comma-separated modes -> one auto window per mode
@@ -125,12 +135,14 @@ show_help() {
     echo "                           buffers, CPU governor=performance)"
     echo "  --no-tune                Never touch system settings"
     echo "  --tx-queue NUM           NIC tx queue length while flooding (default: 10000)"
-    echo "  (tip) HEXXFLOOD_WORKERS=N Force an exact, UNCAPPED parallel worker count"
-    echo "  (tip) WIFI_WORKER_CAP=N   Change the wireless worker cap (default: 2× cores)"
+    echo "  --no-cap, --unlimited    Remove ALL worker caps → full power (no limit)"
+    echo "  --cap NUM                Set an explicit worker ceiling (any interface)"
+    echo "  (tip) HEXXFLOOD_WORKERS=N Force an exact worker count (e.g. 500, 2000), no cap"
+    echo "  (tip) WIFI_WORKER_CAP=N   Same as --cap, via env var"
     echo ""
-    echo -e "${YELLOW}Note:${NC} on a Wi-Fi interface the auto worker count is capped to ~2× cores —"
-    echo "      that is the real throughput peak there (more workers congestion-collapse"
-    echo "      and send LESS). Wired interfaces scale up the full mode ladder."
+    echo -e "${YELLOW}Note:${NC} on a Wi-Fi interface the worker count is auto-capped to a sane peak"
+    echo "      (2× cores) by default — this works well on Wi-Fi. Wired interfaces scale the full"
+    echo "      mode ladder. Want no limit on Wi-Fi too? Add --no-cap (or --unlimited)."
     echo ""
     echo -e "${YELLOW}Root / Privileges:${NC}"
     echo "      The raw-packet engine (hping3) and system tuning need root. If you are"
@@ -510,6 +522,8 @@ parse_args() {
             --tune) SYS_TUNE=true; shift ;;
             --no-tune) SYS_TUNE=false; shift ;;
             --tx-queue) TX_QUEUE_LEN="$2"; shift 2 ;;
+            --cap|--worker-cap) WORKER_CAP="$2"; NO_CAP=false; shift 2 ;;
+            --no-cap|--unlimited|--no-limit) NO_CAP=true; shift ;;
             --monitor) RUN_MONITOR_ONLY=true; shift ;;
             --monitor-mode) MONITOR_MODE="$2"; shift 2 ;;
             --auto-monitor)
@@ -545,7 +559,9 @@ set_mode() {
 # the scheduler and overran the NIC TX queue (ENOBUFS) → it sent *less*. Here we
 # run many parallel floods for genuine full power:
 #   easy 2×  medium 4×  high 8×  extreme 16×  apocalypse 32× cores.
-# Set HEXXFLOOD_WORKERS=N to force an exact, UNCAPPED worker count yourself.
+# On Wi-Fi the count is auto-capped to a sane peak (2× cores) by default; wired
+# interfaces scale the full ladder. Use --no-cap / --unlimited to remove ALL caps,
+# --cap N for an explicit ceiling, or HEXXFLOOD_WORKERS=N for an exact count.
 compute_flood_workers() {
     local cores; cores=$(nproc 2>/dev/null); [[ "$cores" =~ ^[0-9]+$ ]] || cores=2
     [ "$cores" -lt 1 ] && cores=1
@@ -566,25 +582,27 @@ compute_flood_workers() {
     esac
     [ "$FLOOD_WORKERS" -lt 1 ] && FLOOD_WORKERS=1
 
-    # WIRELESS AUTO-CAP. A Wi-Fi link is a shared, half-duplex medium with a
-    # small driver queue: past a low worker count the parallel --flood senders
-    # collide and congestion-collapse, so MORE workers send drastically LESS
-    # (measured on wlan0: 16 workers ~900 pps, 256 workers ~15 pps). On a
-    # wireless iface we therefore cap the AUTO count to the real sweet spot
-    # (~2x cores) for MAXIMUM throughput — this is not a limit on strength, it
-    # IS peak strength here. Wired ifaces are left to scale up. Override with
-    # WIFI_WORKER_CAP=N, or bypass entirely with HEXXFLOOD_WORKERS=N (above).
-    if [ -d "/sys/class/net/${INTERFACE}/wireless" ] || [ -e "/sys/class/net/${INTERFACE}/phy80211" ]; then
-        local wifi_cap=${WIFI_WORKER_CAP:-$(( cores * 2 ))}
-        [[ "$wifi_cap" =~ ^[0-9]+$ ]] && [ "$wifi_cap" -ge 1 ] || wifi_cap=$(( cores * 2 ))
-        if [ "$FLOOD_WORKERS" -gt "$wifi_cap" ]; then
-            FLOOD_WORKERS=$wifi_cap
-            WIFI_CAPPED=1
-        fi
+    # --no-cap / --unlimited removes ALL ceilings → full power, no matter the iface.
+    [ "$NO_CAP" = true ] && return
+
+    # Work out the ceiling to apply (empty = none):
+    #   1. an explicit --cap N / WIFI_WORKER_CAP=N wins on ANY interface;
+    #   2. otherwise, on a WIRELESS interface, default to the Wi-Fi peak (2× cores)
+    #      — this is the sane default that works well on Wi-Fi;
+    #   3. otherwise (wired) no cap — scale the full mode ladder.
+    local cap=""
+    if [[ "${WORKER_CAP:-}" =~ ^[0-9]+$ ]] && [ "$WORKER_CAP" -ge 1 ]; then
+        cap=$WORKER_CAP
+        CAP_REASON="--cap ${WORKER_CAP}"
+    elif [ -d "/sys/class/net/${INTERFACE}/wireless" ] || [ -e "/sys/class/net/${INTERFACE}/phy80211" ]; then
+        cap=$(( cores * 2 ))
+        CAP_REASON="wireless default (2× cores)"
     fi
 
-    # Generous ceiling for the auto modes; use HEXXFLOOD_WORKERS to exceed it.
-    [ "$FLOOD_WORKERS" -gt 1024 ] && FLOOD_WORKERS=1024
+    if [ -n "$cap" ] && [ "$FLOOD_WORKERS" -gt "$cap" ]; then
+        FLOOD_WORKERS=$cap
+        WIFI_CAPPED=1
+    fi
 }
 
 # Apply SAFE, RESTORABLE system tuning that genuinely lifts the real send rate:
@@ -1059,6 +1077,9 @@ main() {
     if ! [[ "$TX_QUEUE_LEN" =~ ^[0-9]+$ ]] || [ "$TX_QUEUE_LEN" -lt 1 ]; then
         echo -e "${RED}❌ --tx-queue must be a positive number${NC}"; exit 1
     fi
+    if [ -n "$WORKER_CAP" ] && { ! [[ "$WORKER_CAP" =~ ^[0-9]+$ ]] || [ "$WORKER_CAP" -lt 1 ]; }; then
+        echo -e "${RED}❌ --cap must be a positive number (omit it for no cap)${NC}"; exit 1
+    fi
     if ! ifconfig "$INTERFACE" &>/dev/null; then
         echo -e "${YELLOW}⚠️  Interface '$INTERFACE' not found — packet stats may show 0. Use -i to set the right one.${NC}"
     fi
@@ -1084,7 +1105,7 @@ main() {
     echo "  Attack Types: ${ATTACK_TYPES:-all}"
     echo "  Packet Size: $PACKET_SIZE bytes"
     echo -e "  Flood Power: ${GREEN}${FLOOD_WORKERS}${NC} parallel hping3 --flood workers (${CORES} CPU cores)$([ "${WORKERS_FORCED:-0}" = 1 ] && echo " (forced)")"
-    [ "${WIFI_CAPPED:-0}" = 1 ] && echo -e "  ${YELLOW}↳ wireless iface '$INTERFACE' → capped to WiFi peak (2× cores) for max real throughput.${NC} Override: HEXXFLOOD_WORKERS=N or WIFI_WORKER_CAP=N"
+    [ "${WIFI_CAPPED:-0}" = 1 ] && echo -e "  ${YELLOW}↳ workers capped to ${FLOOD_WORKERS} — ${CAP_REASON}.${NC} Use ${WHITE}--no-cap${NC}${YELLOW} for full power (no limit).${NC}"
     echo "  Privileges: $([ "${RUN_AS_ROOT:-0}" = 1 ] && echo "root (full raw-packet engine)" || echo "user (HTTP/URL flood only)")"
     echo "  System Tuning: $([ "$SYS_TUNE" = true ] && echo "on (restored on exit)" || echo "off")"
     echo "  Duration: ${ATTACK_DURATION:-Infinite}"

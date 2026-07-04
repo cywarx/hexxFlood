@@ -27,7 +27,7 @@
 - ✅ **6 Attack Types** (SYN, UDP, ICMP, ACK, RST, FIN)
 - ✅ **6 Attack Modes** (Easy, Medium, High, Extreme, **Apocalypse**, Custom)
 - ✅ **Core-scaling flood pool** — parallel `hping3 --flood` workers sized to your CPU cores (2× → 32×)
-- ✅ **Wireless auto-cap** — on Wi-Fi the worker count is auto-tuned to the real throughput peak (more workers congestion-collapse and send *less*)
+- ✅ **Smart Wi-Fi cap + escape hatch** — on Wi-Fi the worker count auto-caps to a sane peak (2× cores) by default; wired scales the full ladder. Remove all limits any time with `--no-cap` / `--unlimited`, or set your own with `--cap N`
 - ✅ **Safe, restorable system tuning** (`--tune`) — bigger tx-queue + socket buffers + performance CPU governor, all **restored on exit**
 - ✅ **Auto-stop for heavy modes** — `extreme`/`apocalypse` default to 60s unless you pass `-D`
 - ✅ **Custom Port Selection** & **IP Spoofing**
@@ -128,6 +128,8 @@ An `AUTO_ROOT` passed in the environment overrides the value saved in the config
 | `--tune`                | Force safe system tuning on (tx-queue, socket buffers, `performance` governor — **restored on exit**) |
 | `--no-tune`             | Never touch system settings |
 | `--tx-queue NUM`        | NIC tx queue length while flooding (default: `10000`) |
+| `--no-cap`, `--unlimited` | Remove **all** worker caps → full power (no limit), incl. on Wi-Fi |
+| `--cap NUM`             | Set an explicit worker ceiling on any interface (e.g. `--cap 64`) |
 | `-U, --update`          | Update hexxFlood to the latest version (`git pull`) |
 | `-V, --version`         | Show version and exit |
 | `-h, --help`            | Show help |
@@ -148,21 +150,29 @@ sized in multiples of `nproc` rather than spawning hundreds of thrashing process
 | `apocalypse` | **32× cores** | all | on | **60s** |
 | `custom`     | 8× cores  | your own `-P / -T` values | auto | ∞ |
 
-> **Wireless auto-cap (important).** On a **Wi-Fi** interface the auto worker count is capped
-> to **~2× cores**. A wireless link is a shared, half-duplex medium with a small driver queue:
-> past a low worker count the parallel floods collide and *congestion-collapse*, so **more
-> workers send drastically LESS** (measured: 16 workers ≈ 900 pps vs 256 workers ≈ 15 pps).
-> The cap **is** peak strength on Wi-Fi — it's shown in the config output. **Wired interfaces
-> scale up the full ladder** (64/128/256 workers). Change the cap with `WIFI_WORKER_CAP=N`.
+> **Wi-Fi auto-cap (default) — with a full-power escape hatch.** On a **Wi-Fi** interface the
+> auto worker count is capped to **~2× cores** by default. A wireless link is shared and
+> half-duplex with a small driver queue, so this cap keeps throughput at its sweet spot on
+> Wi-Fi. **Wired interfaces are never auto-capped** and scale the full ladder (64/128/256…).
+>
+> Want **no limit** (e.g. to push the target's latency into the hundreds/thousands of ms)?
+> Remove all caps with **`--no-cap`** (alias `--unlimited`):
+> ```bash
+> sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme --no-cap
+> ```
 
-> **Full manual control:** set `HEXXFLOOD_WORKERS=N` to force an exact, **uncapped** worker
-> count (bypasses the mode sizing *and* the wireless cap), e.g.
-> `sudo HEXXFLOOD_WORKERS=600 ./hexxFlood.sh -t 192.168.1.14 -m extreme`.
-> Auto modes otherwise cap at 1024 workers; the override has no cap.
+> **Set your own ceiling:** `--cap N` (or `WIFI_WORKER_CAP=N`) applies an explicit worker
+> ceiling on **any** interface — e.g. `--cap 64`.
+
+> **Exact count:** `HEXXFLOOD_WORKERS=N` forces an exact, uncapped worker count (bypasses the
+> mode sizing *and* the Wi-Fi cap), e.g.
+> `sudo HEXXFLOOD_WORKERS=2000 ./hexxFlood.sh -t 192.168.1.14 -m extreme`.
 
 > **Maximising impact (read this):**
-> - **On Wi-Fi, fewer workers is more power.** The tool already auto-caps for you — don't fight
->   it by forcing huge `HEXXFLOOD_WORKERS`; on wireless that *reduces* throughput.
+> - **On Wi-Fi, use `--no-cap` when you want maximum pressure.** The default 2× cores cap is
+>   the safe Wi-Fi sweet spot; to drive the target's latency into the hundreds/thousands of ms,
+>   add `--no-cap` (or force a big count like `HEXXFLOOD_WORKERS=500` / `2000`). On **wired**
+>   NICs there's no cap to begin with — just pick a heavy mode.
 > - **Packet size is the other big lever.** The default `-s 65495` maxes *bandwidth* but sends
 >   few packets/sec. For **maximum packets/sec** (overwhelms a host's CPU/interrupts), use a
 >   small size: `sudo ./hexxFlood.sh -t <ip> -m extreme -s 120`.
@@ -313,17 +323,23 @@ sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme --no-tune
 sudo ./hexxFlood.sh -t 192.168.1.14 -m high --tx-queue 20000
 ```
 
-#### 🧵 Worker-count overrides (env vars) — `HEXXFLOOD_WORKERS`, `WIFI_WORKER_CAP`
+#### 🧵 Worker-count caps & overrides — `--no-cap`, `--cap`, `HEXXFLOOD_WORKERS`
 
 ```bash
-# HEXXFLOOD_WORKERS=N : force an EXACT, uncapped number of parallel flood workers.
-#                       Bypasses both the mode sizing and the Wi-Fi cap. Use on
-#                       wired NICs to push beyond the presets (auto modes cap at 1024).
-sudo HEXXFLOOD_WORKERS=600 ./hexxFlood.sh -t 192.168.1.14 -m extreme
+# (default) On Wi-Fi the worker count auto-caps to 2× cores — the safe sweet spot.
+#           On wired interfaces there is no cap. Nothing to pass for this.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme -i wlan0
 
-# WIFI_WORKER_CAP=N : change the Wi-Fi auto-cap (default 2× cores). On wireless,
-#                     MORE workers usually send LESS — tune this only if you've measured.
-sudo WIFI_WORKER_CAP=8 ./hexxFlood.sh -t 192.168.1.14 -m high -i wlan0
+# --no-cap / --unlimited : remove ALL caps, including the Wi-Fi one. Full power.
+#                          Use when you want maximum pressure on a wireless link.
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme -i wlan0 --no-cap
+
+# --cap N : set your own worker ceiling on ANY interface (overrides the Wi-Fi default).
+sudo ./hexxFlood.sh -t 192.168.1.14 -m extreme --cap 64
+
+# HEXXFLOOD_WORKERS=N : force an EXACT worker count (e.g. 500, 2000), never capped.
+#                       Bypasses the mode sizing AND the Wi-Fi cap.
+sudo HEXXFLOOD_WORKERS=2000 ./hexxFlood.sh -t 192.168.1.14 -m extreme
 ```
 
 #### 🔐 Privileges — `sudo`, `AUTO_ROOT`
